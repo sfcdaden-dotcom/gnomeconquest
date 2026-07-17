@@ -1,0 +1,932 @@
+/* Whimsy Wars — garden-party UI theme. System fonts + emoji only. */
+
+:root {
+  --sans: system-ui, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  --bg: #eef4e4;
+  --bg-accent: #dceac8;
+  --panel: #ffffff;
+  --panel-2: #f6f9ef;
+  --text: #2c3524;
+  --muted: #6d7a5f;
+  --border: #cbd8b6;
+  --accent: #3f8f3f;
+  --accent-text: #ffffff;
+  --warn: #b05430;
+  --error: #c23636;
+  --cell: #d8e7bf;
+  --cell-alt: #cfe0b3;
+  --shadow: 0 4px 14px rgba(44, 66, 24, 0.12);
+  /* Vertical chrome around the board: topbar + paddings + footer slot. */
+  --board-chrome: 172px;
+
+  color-scheme: light dark;
+  font: 15px/1.45 var(--sans);
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b2216;
+    --bg-accent: #202b18;
+    --panel: #26301e;
+    --panel-2: #1f2818;
+    --text: #dbe6cc;
+    --muted: #93a380;
+    --border: #3c4a2d;
+    --accent: #63b35c;
+    --accent-text: #10160b;
+    --warn: #d98a5e;
+    --error: #e56c6c;
+    --cell: #2c3a20;
+    --cell-alt: #27341c;
+    --shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(1200px 600px at 20% -10%, var(--bg-accent), transparent),
+    var(--bg);
+  color: var(--text);
+}
+
+h1,
+h2 {
+  margin: 0.2em 0;
+  line-height: 1.2;
+}
+
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 0.85rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Buttons                                                             */
+/* ------------------------------------------------------------------ */
+
+.btn {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition: transform 0.06s ease, background 0.15s ease;
+}
+.btn:hover:not(:disabled) {
+  background: var(--panel-2);
+  transform: translateY(-1px);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.btn.accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.btn.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.btn.small {
+  padding: 3px 8px;
+  font-size: 0.82rem;
+  border-radius: 8px;
+}
+.btn.big {
+  padding: 10px 20px;
+  font-size: 1.05rem;
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.btn-row.center {
+  justify-content: center;
+}
+.btn-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Setup screen                                                        */
+/* ------------------------------------------------------------------ */
+
+.setup-screen {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.setup-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+  padding: 28px 32px;
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.game-title {
+  text-align: center;
+  font-size: 2rem;
+}
+.tagline {
+  text-align: center;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+
+.setup-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.setup-label {
+  width: 120px;
+  font-weight: 600;
+  flex: none;
+}
+.check-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+
+.seat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.seat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 6px 10px;
+}
+.seat-row input[type='text'] {
+  font: inherit;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+.seed-input {
+  font: inherit;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  width: 160px;
+}
+.setup-error {
+  color: var(--error);
+  font-size: 0.9rem;
+}
+
+/* Crash-recovery card (ErrorBoundary) */
+.crash-card {
+  align-items: center;
+  text-align: center;
+}
+.crash-details {
+  width: 100%;
+  text-align: left;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.crash-details pre {
+  overflow-x: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.pp-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--pc, #888);
+  flex: none;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.35);
+}
+
+/* ------------------------------------------------------------------ */
+/* Game screen layout                                                  */
+/* ------------------------------------------------------------------ */
+
+.game-screen {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.brand {
+  font-weight: 700;
+}
+.banner {
+  flex: 1;
+  font-size: 0.95rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ff-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.seed-tag {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr) clamp(280px, 26vw, 360px);
+  gap: 12px;
+  padding: 12px;
+  min-height: 0;
+}
+
+.left-col,
+.right-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.board-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Constant-height slot under the board so the action bar / targeting banner
+   appearing and disappearing never reflows the board above it. */
+.board-footer {
+  min-height: 48px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  width: 100%;
+  flex: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* Board                                                               */
+/* ------------------------------------------------------------------ */
+
+/* The board fits its slot instead of dictating it: it never exceeds the
+   middle column's width, never pushes the footer slot off a short viewport
+   (100dvh minus the surrounding chrome), and is capped so it doesn't dwarf
+   the side panels on large monitors. Container-query units (cqi) below key
+   every token/emoji to the board's rendered size, scaled by --n. */
+.board {
+  display: grid;
+  grid-template-columns: repeat(var(--n, 7), 1fr);
+  gap: 3px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  width: min(100%, calc(100dvh - var(--board-chrome)), 580px);
+  aspect-ratio: 1;
+  container-type: inline-size;
+}
+
+.cell {
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  border-radius: 8px;
+  background: var(--cell);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  overflow: hidden;
+  transition: box-shadow 0.12s ease, filter 0.12s ease;
+}
+.cell:nth-child(even) {
+  background: var(--cell-alt);
+}
+.cell:hover {
+  filter: brightness(1.06);
+}
+
+.cell.g-home {
+  background: color-mix(in srgb, var(--pc, #888) 30%, var(--cell));
+  border-color: var(--pc, var(--border));
+}
+.cell.g-dandelion {
+  background: color-mix(in srgb, #e8c93e 26%, var(--cell));
+}
+.cell.g-mushroom {
+  background: color-mix(in srgb, #d86a5a 24%, var(--cell));
+}
+.cell.g-flytrap {
+  background: color-mix(in srgb, #2c7a2c 30%, var(--cell));
+}
+.cell.g-maize {
+  background: color-mix(in srgb, #d8a93e 28%, var(--cell));
+}
+.cell.g-slippery {
+  background: color-mix(in srgb, #5ab8d8 28%, var(--cell));
+}
+.cell.g-tunnel {
+  background: color-mix(in srgb, #6b5a8c 30%, var(--cell));
+}
+
+.garden-emoji {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  /* ≈ a third of one cell, whatever the board size (--n). */
+  font-size: clamp(12px, calc(36cqi / var(--n, 7)), 20px);
+  line-height: 1;
+  pointer-events: none;
+}
+.garden-emoji.inactive {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+.star {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: clamp(10px, calc(28cqi / var(--n, 7)), 16px);
+  pointer-events: none;
+}
+.stun {
+  position: absolute;
+  bottom: 2px;
+  left: 4px;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.tokens {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  pointer-events: none;
+  padding-top: 8px;
+}
+
+.token {
+  position: relative;
+  /* ≈ 60% of one cell, whatever the board size. */
+  width: clamp(18px, calc(60cqi / var(--n, 7)), 32px);
+  height: clamp(18px, calc(60cqi / var(--n, 7)), 32px);
+  border-radius: 50%;
+  background: var(--pc, #888);
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.token.moved {
+  opacity: 0.55;
+}
+.token.snail {
+  border-radius: 30%;
+}
+.token-face {
+  font-size: clamp(10px, calc(34cqi / var(--n, 7)), 18px);
+  line-height: 1;
+}
+.token-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 15px;
+  height: 15px;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+}
+
+/* Highlights */
+.cell.hl-move {
+  box-shadow: inset 0 0 0 3px #3f8f3f;
+  filter: brightness(1.08);
+}
+.cell.hl-decision {
+  box-shadow: inset 0 0 0 3px #d8a93e;
+  animation: pulse 1.1s ease-in-out infinite;
+}
+.cell.hl-target {
+  box-shadow: inset 0 0 0 3px #c23636;
+  animation: pulse 1.1s ease-in-out infinite;
+}
+.cell.hl-picked {
+  box-shadow: inset 0 0 0 3px #7a3bd8;
+}
+.cell.sel {
+  box-shadow: inset 0 0 0 3px var(--text);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.18);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Panels                                                              */
+/* ------------------------------------------------------------------ */
+
+.panel-title {
+  font-weight: 700;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* Decision/fight titles carry the acting player's context — keep them loud. */
+.decision-panel .panel-title,
+.fight-panel .panel-title {
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.player-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.player-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--pc, var(--border));
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+.player-panel.active-turn {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pc) 55%, transparent);
+}
+.player-panel.status-out {
+  opacity: 0.55;
+}
+.pp-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.pp-name {
+  font-weight: 700;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pp-act {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: 6px;
+  padding: 1px 6px;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.pp-stats {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-size: 0.85rem;
+}
+
+.supply-panel,
+.curse-panel,
+.decision-panel,
+.fight-panel,
+.hand-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  flex: none;
+}
+
+.supply-grid {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+
+.curse-panel {
+  border-color: var(--error);
+}
+
+.decision-panel {
+  border: 2px solid var(--accent);
+  box-shadow: var(--shadow);
+}
+.decision-panel.waiting {
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+/* Fight */
+.fight-panel {
+  border: 2px solid var(--error);
+  box-shadow: var(--shadow);
+}
+.fight-sides {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0;
+}
+.fight-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--pc, var(--border));
+  border-left: 4px solid var(--pc, var(--border));
+  border-radius: 8px;
+  padding: 3px 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.side-role {
+  font-size: 0.7rem;
+  color: var(--muted);
+  font-weight: 400;
+}
+.vs {
+  font-weight: 800;
+  color: var(--muted);
+}
+.fight-rolls {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+.fight-respond {
+  margin-top: 6px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+}
+
+/* Hand */
+.hand-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: clamp(150px, 30dvh, 300px);
+  overflow-y: auto;
+}
+.card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: var(--panel-2);
+}
+.card.sudden {
+  border-left: 4px solid #d8a93e;
+}
+.card.ritual {
+  border-left: 4px solid #7a3bd8;
+}
+.card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+.card-name {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.card-timing {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.card-text {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 3px 0 5px;
+}
+.deck-info {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* Log */
+.game-log {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+}
+.log-line {
+  padding: 1px 0;
+}
+.log-line.latest {
+  font-weight: 700;
+}
+.log-turnStarted {
+  font-weight: 700;
+  margin-top: 4px;
+  color: var(--accent);
+}
+.log-fightStarted,
+.log-playerEliminated,
+.log-curseRevealed {
+  font-weight: 600;
+  color: var(--error);
+}
+.log-gameFinished {
+  font-weight: 800;
+}
+
+/* Action bar + targeting (live inside the fixed-height .board-footer) */
+.action-bar,
+.targeting-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 6px 10px;
+  max-width: 100%;
+}
+.targeting-banner {
+  border: 2px solid #c23636;
+  font-size: 0.9rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Overlays & toasts                                                   */
+/* ------------------------------------------------------------------ */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 28, 12, 0.55);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+.overlay.opaque {
+  background: color-mix(in srgb, var(--bg) 92%, black);
+  backdrop-filter: none;
+}
+
+.overlay-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  padding: 24px 30px;
+  max-width: min(520px, 92vw);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+.pass-emoji {
+  font-size: 3rem;
+}
+
+.fight-overlay {
+  min-width: min(460px, 92vw);
+}
+.fight-header {
+  font-weight: 800;
+  font-size: 1.1rem;
+}
+.big-dice {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 1rem;
+}
+.big-dice .die {
+  font-size: 3.2rem;
+  line-height: 1;
+  animation: dice-in 0.35s ease;
+}
+@keyframes dice-in {
+  from {
+    transform: rotate(-25deg) scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+.fight-steps {
+  max-height: 180px;
+  overflow-y: auto;
+  text-align: left;
+  width: 100%;
+  font-size: 0.82rem;
+  background: var(--panel-2);
+  border-radius: 10px;
+  padding: 6px 10px;
+}
+
+.toasts {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 60;
+  pointer-events: none;
+}
+.toast {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 5px solid var(--accent);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 8px 14px;
+  font-size: 0.88rem;
+  max-width: 70vw;
+  animation: toast-in 0.2s ease;
+}
+.toast.error {
+  border-left-color: var(--error);
+}
+@keyframes toast-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* Narrow screens: stack columns (game is designed for >=1280 but stays usable) */
+@media (max-width: 1080px) {
+  .main {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+  .game-screen {
+    overflow: auto;
+  }
+  .left-col,
+  .right-col {
+    overflow-y: visible;
+  }
+  /* min-height: 0 exists for the desktop columns' internal scrolling; in
+     stacked mode rows must size to their content (the page scrolls instead),
+     otherwise the board overflows its collapsed grid row onto the panels. */
+  .left-col,
+  .right-col,
+  .board-wrap {
+    min-height: auto;
+  }
+  /* Stacked: the board shares the screen with the panels below it. */
+  .board {
+    width: min(100%, 62dvh, 520px);
+  }
+  /* Player cards sit side by side instead of a tall stack. */
+  .player-panels {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .player-panel {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+  .left-col {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+  .left-col > * {
+    flex: 1 1 220px;
+  }
+}
+
+/* Short-but-wide screens (small laptops): shave the chrome so the board and
+   its footer always fit without scrolling. */
+@media (max-height: 640px) and (min-width: 1081px) {
+  :root {
+    --board-chrome: 140px;
+  }
+  .main {
+    gap: 8px;
+    padding: 8px;
+  }
+  .board-footer {
+    min-height: 40px;
+  }
+}
