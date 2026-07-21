@@ -30,8 +30,9 @@ rulebook was ambiguous, the designer's ruling is marked **[RULING]**.
 ## Setup
 
 1. Each player gets a Home Garden, gnome supply, and 3 Wishes.
-2. Home Gardens placed equidistant (digital version uses fixed layout presets:
-   "No additional gardens", "Few", "Many" — mirroring the rulebook diagrams).
+2. Home Gardens placed equidistant (digital version uses named layout presets —
+   None/Few/Orchard/Fortress/Gauntlet/Many, see `gardenPresets.ts` — mirroring
+   and extending the rulebook diagrams).
 3. **[RULING]** Players start with **0 gnomes on the board**; you bootstrap via
    Home Garden harvest.
 4. Curse Cards are separated from the Whimsy deck.

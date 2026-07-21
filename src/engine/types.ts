@@ -50,7 +50,8 @@ export type PlayerController = 'human' | 'cpu';
  */
 export type PlayerStatus = 'playing' | 'snail' | 'out';
 
-export type GardenPreset = 'none' | 'few' | 'many';
+/** Id of a registered garden preset — see `GARDEN_PRESETS` in gardenPresets.ts. */
+export type GardenPreset = string;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -63,7 +64,7 @@ export interface PlayerSetup {
 
 /** Fully-resolved game configuration (stored on the state). */
 export interface GameConfig {
-  /** Odd number >= 5 (>= 7 when gardenPreset is 'few' or 'many'). Default 7. */
+  /** Odd number >= 5 (>= the chosen preset's minBoardSize). Default 7. */
   boardSize: number;
   /** Default 3. */
   startingWishes: number;
@@ -79,6 +80,14 @@ export interface GameConfig {
   centerStar: boolean;
   /** Additional-garden layout preset. Default 'none'. */
   gardenPreset: GardenPreset;
+  /**
+   * Explicit additional-garden layout, e.g. from a player-built custom
+   * preset. When present, this is used verbatim instead of looking
+   * `gardenPreset` up in the built-in registry (gardenPresets.ts) — but
+   * `gardenPreset` is still stored for display purposes. Plain data, so it
+   * round-trips through save/replay like the rest of GameConfig.
+   */
+  customGardens?: Array<{ pos: Pos; type: PlantableGardenType }>;
   /** 2 or 4 seats, clockwise. */
   players: Array<{ name: string; controller: PlayerController }>;
 }

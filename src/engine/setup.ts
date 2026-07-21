@@ -2,30 +2,14 @@
  * Game creation: config validation, board layout presets, initial state,
  * and the turn-order roll-off (surfaced as `rollOff` decisions).
  *
- * BOARD LAYOUTS (documented here; positions scale with board size N, center
- * c = (N-1)/2 — shown for the default 7×7, so c = 3):
- *
- * Home Gardens (equidistant edge midpoints, seats clockwise):
+ * Home Gardens (equidistant edge midpoints, seats clockwise; N = boardSize,
+ * center c = (N-1)/2 — shown for the default 7×7, so c = 3):
  *   2 players: seat 0 west (0,3), seat 1 east (6,3)
  *   4 players: seat 0 west (0,3), seat 1 north (3,0), seat 2 east (6,3),
  *              seat 3 south (3,6)
  *
- * Preset 'none': homes (+ Center Star at (3,3) if enabled) only.
- *
- * Preset 'few' — 4 Tunnel Gardens, 4-fold symmetric around the center:
- *   (1,1)  (5,1)
- *   (1,5)  (5,5)
- *   Rationale: a mobility ring that lets every seat rotate around the board.
- *
- * Preset 'many' — 'few' plus a symmetric economy/defense mix (16 gardens):
- *   Tunnels    ×4: (1,1) (5,1) (1,5) (5,5)      — corner mobility
- *   Dandelions ×4: (1,3) (3,1) (5,3) (3,5)      — one near each home approach
- *   Mushrooms  ×4: (2,3) (3,2) (4,3) (3,4)      — contested clone ring by center
- *   Flytraps   ×4: (2,2) (4,2) (2,4) (4,4)      — hazards guarding the center
- *   All positions are 4-fold rotationally symmetric, so the layout is fair
- *   for both the 2-player (west/east) and 4-player seatings.
- *
- * Every preset garden consumes tiles from the shared supply (8 per type).
+ * Additional-garden layouts ("presets") are registered in gardenPresets.ts —
+ * see that file for the list and for how to add a new one.
  */
 
 import type {
@@ -43,6 +27,7 @@ import { normalizeSeed } from './rng';
 import { posKey } from './helpers';
 import { makeGarden } from './gardens';
 import { buildInitialDeck } from './cards';
+import { DEFAULT_GARDEN_PRESET_ID, findGardenPreset } from './gardenPresets';
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -56,11 +41,21 @@ export const DEFAULT_CONFIG = {
   totalReinforcements: 16,
   handLimit: 7,
   centerStar: true,
-  gardenPreset: 'none' as GardenPreset,
+  gardenPreset: DEFAULT_GARDEN_PRESET_ID as GardenPreset,
 } as const;
 
 /** Shared supply: 8 tiles of each plantable type, game-wide. */
 export const SUPPLY_PER_TYPE = 8;
+
+/** Every type a player can plant/design a garden layout with (excludes 'home'). */
+export const PLANTABLE_GARDEN_TYPES: readonly PlantableGardenType[] = [
+  'dandelion',
+  'mushroom',
+  'flytrap',
+  'maize',
+  'slippery',
+  'tunnel',
+];
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -76,33 +71,11 @@ export function homePositions(boardSize: number, playerCount: number): Pos[] {
   return playerCount === 2 ? [west, east] : [west, north, east, south];
 }
 
-/** Additional-garden preset positions (see file header for rationale). */
+/** Additional-garden preset positions (registry: gardenPresets.ts). */
 export function presetGardens(boardSize: number, preset: GardenPreset): Array<{ pos: Pos; type: PlantableGardenType }> {
-  if (preset === 'none') return [];
-  const n = boardSize;
-  const c = (n - 1) / 2;
-  const tunnels: Array<{ pos: Pos; type: PlantableGardenType }> = [
-    { pos: { x: 1, y: 1 }, type: 'tunnel' },
-    { pos: { x: n - 2, y: 1 }, type: 'tunnel' },
-    { pos: { x: 1, y: n - 2 }, type: 'tunnel' },
-    { pos: { x: n - 2, y: n - 2 }, type: 'tunnel' },
-  ];
-  if (preset === 'few') return tunnels;
-  return [
-    ...tunnels,
-    { pos: { x: 1, y: c }, type: 'dandelion' },
-    { pos: { x: c, y: 1 }, type: 'dandelion' },
-    { pos: { x: n - 2, y: c }, type: 'dandelion' },
-    { pos: { x: c, y: n - 2 }, type: 'dandelion' },
-    { pos: { x: c - 1, y: c }, type: 'mushroom' },
-    { pos: { x: c, y: c - 1 }, type: 'mushroom' },
-    { pos: { x: c + 1, y: c }, type: 'mushroom' },
-    { pos: { x: c, y: c + 1 }, type: 'mushroom' },
-    { pos: { x: c - 1, y: c - 1 }, type: 'flytrap' },
-    { pos: { x: c + 1, y: c - 1 }, type: 'flytrap' },
-    { pos: { x: c - 1, y: c + 1 }, type: 'flytrap' },
-    { pos: { x: c + 1, y: c + 1 }, type: 'flytrap' },
-  ];
+  const def = findGardenPreset(preset);
+  if (!def) badConfig(`Unknown gardenPreset "${preset}"`);
+  return def.build(boardSize);
 }
 
 // ---------------------------------------------------------------------------
@@ -121,8 +94,25 @@ function resolveConfig(options: CreateGameOptions): GameConfig {
     badConfig('boardSize must be an odd integer >= 5');
   }
   const gardenPreset = options.gardenPreset ?? DEFAULT_CONFIG.gardenPreset;
-  if (gardenPreset !== 'none' && boardSize < 7) {
-    badConfig(`gardenPreset "${gardenPreset}" requires boardSize >= 7`);
+  const customGardens = options.customGardens;
+  if (customGardens) {
+    const plantable = new Set<string>(PLANTABLE_GARDEN_TYPES);
+    const seen = new Set<string>();
+    for (const g of customGardens) {
+      if (!Number.isInteger(g.pos.x) || !Number.isInteger(g.pos.y) || g.pos.x < 0 || g.pos.y < 0 || g.pos.x >= boardSize || g.pos.y >= boardSize) {
+        badConfig(`customGardens position (${g.pos.x},${g.pos.y}) is out of bounds for boardSize ${boardSize}`);
+      }
+      if (!plantable.has(g.type)) badConfig(`customGardens has an invalid garden type "${g.type}"`);
+      const key = posKey(g.pos);
+      if (seen.has(key)) badConfig(`customGardens has more than one garden at ${key}`);
+      seen.add(key);
+    }
+  } else {
+    const presetDef = findGardenPreset(gardenPreset);
+    if (!presetDef) badConfig(`Unknown gardenPreset "${gardenPreset}"`);
+    if (boardSize < presetDef.minBoardSize) {
+      badConfig(`gardenPreset "${gardenPreset}" requires boardSize >= ${presetDef.minBoardSize}`);
+    }
   }
   const cfg: GameConfig = {
     boardSize,
@@ -133,6 +123,7 @@ function resolveConfig(options: CreateGameOptions): GameConfig {
     handLimit: options.handLimit ?? DEFAULT_CONFIG.handLimit,
     centerStar: options.centerStar ?? DEFAULT_CONFIG.centerStar,
     gardenPreset,
+    ...(customGardens ? { customGardens } : {}),
     players: options.players.map((p, i) => ({
       name: p.name ?? `Player ${i + 1}`,
       controller: p.controller,
@@ -222,8 +213,9 @@ export function createGame(options: CreateGameOptions, seed: number): GameState 
     state.gardens[posKey(p.homePos)] = makeGarden('home', 0, p.id);
   }
 
-  // Preset gardens (consume shared supply).
-  for (const g of presetGardens(config.boardSize, config.gardenPreset)) {
+  // Preset (or custom) gardens (consume shared supply).
+  const layout = config.customGardens ?? presetGardens(config.boardSize, config.gardenPreset);
+  for (const g of layout) {
     const key = posKey(g.pos);
     if (state.gardens[key]) badConfig(`Preset layout collision at ${key}`);
     if (state.supply[g.type] <= 0) badConfig(`Preset layout exhausts the ${g.type} supply`);

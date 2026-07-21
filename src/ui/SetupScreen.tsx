@@ -3,10 +3,13 @@
  * Center Star toggle, optional seed.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import type { CreateGameOptions, GardenPreset, PlayerController } from '../engine';
+import type { CreateGameOptions, GardenPreset, GardenPresetDef, PlayerController } from '../engine';
+import { GARDEN_PRESETS, DEFAULT_GARDEN_PRESET_ID } from '../engine';
 import { playerColor, randomSeed, PLAYER_COLOR_NAMES } from './meta';
+import { PresetEditor } from './PresetEditor';
+import { CUSTOM_EDITOR_BOARD_SIZE, downloadCustomPreset, parseCustomPresetFile } from './customPresets';
 
 export interface SetupResult {
   options: CreateGameOptions;
@@ -20,6 +23,10 @@ interface SeatDraft {
 
 const DEFAULT_NAMES = ['Alice', 'Bob', 'Carol', 'Dave'];
 
+function isCustomPresetId(id: string): boolean {
+  return id.startsWith('custom:');
+}
+
 export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) {
   const [count, setCount] = useState<2 | 4>(2);
   const [seats, setSeats] = useState<SeatDraft[]>([
@@ -29,12 +36,51 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
     { name: DEFAULT_NAMES[3], controller: 'cpu' },
   ]);
   const [preset, setPreset] = useState<GardenPreset>('few');
+  const [customPresets, setCustomPresets] = useState<GardenPresetDef[]>([]);
+  const [editing, setEditing] = useState(false);
   const [centerStar, setCenterStar] = useState(true);
   const [seedText, setSeedText] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
+
+  const allPresets = [...GARDEN_PRESETS, ...customPresets];
+  const presetDef = allPresets.find((p) => p.id === preset) ?? allPresets.find((p) => p.id === DEFAULT_GARDEN_PRESET_ID)!;
+  const editingExisting = isCustomPresetId(preset) ? customPresets.find((p) => p.id === preset) : undefined;
 
   function updateSeat(i: number, patch: Partial<SeatDraft>) {
     setSeats((s) => s.map((seat, j) => (j === i ? { ...seat, ...patch } : seat)));
+  }
+
+  function addOrUpdateCustomPreset(def: GardenPresetDef) {
+    setCustomPresets((list) => {
+      const idx = list.findIndex((p) => p.id === def.id);
+      if (idx === -1) return [...list, def];
+      const next = [...list];
+      next[idx] = def;
+      return next;
+    });
+    setPreset(def.id);
+    setEditing(false);
+  }
+
+  function removeCustomPreset(id: string) {
+    setCustomPresets((list) => list.filter((p) => p.id !== id));
+    setPreset('few');
+  }
+
+  function importPresetFile(file: File) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const def = parseCustomPresetFile(String(reader.result));
+        setCustomPresets((list) => [...list, def]);
+        setPreset(def.id);
+        setError(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Could not read that preset file.');
+      }
+    };
+    reader.readAsText(file);
   }
 
   function start() {
@@ -43,8 +89,12 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
       setError('Seed must be a number (or leave it blank for a random one).');
       return;
     }
+    const isCustom = isCustomPresetId(preset);
     const options: CreateGameOptions = {
       gardenPreset: preset,
+      ...(isCustom
+        ? { boardSize: CUSTOM_EDITOR_BOARD_SIZE, customGardens: presetDef.build(CUSTOM_EDITOR_BOARD_SIZE) }
+        : {}),
       centerStar,
       players: seats.slice(0, count).map((s, i) => ({
         name: s.name.trim() || DEFAULT_NAMES[i],
@@ -52,6 +102,12 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
       })),
     };
     onStart({ options, seed: Math.floor(parsed) });
+  }
+
+  if (editing) {
+    return (
+      <PresetEditor initial={editingExisting} onCancel={() => setEditing(false)} onSave={addOrUpdateCustomPreset} />
+    );
   }
 
   return (
@@ -109,18 +165,60 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
 
         <div className="setup-row">
           <span className="setup-label">Extra gardens</span>
-          <div className="btn-row">
-            {(['none', 'few', 'many'] as const).map((p) => (
-              <button
-                key={p}
-                type="button"
-                className={`btn${preset === p ? ' accent' : ''}`}
-                onClick={() => setPreset(p)}
-              >
-                {p === 'none' ? 'None' : p === 'few' ? 'Few (tunnels)' : 'Many'}
+          <select
+            className="preset-select"
+            value={preset}
+            onChange={(e) => setPreset(e.target.value)}
+            aria-label="Extra-garden preset"
+          >
+            <optgroup label="Built-in">
+              {GARDEN_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </optgroup>
+            {customPresets.length > 0 && (
+              <optgroup label="Custom (this session)">
+                {customPresets.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        </div>
+        <p className="preset-description muted small">{presetDef.description}</p>
+        <div className="btn-row">
+          <button type="button" className="btn small" onClick={() => setEditing(true)}>
+            🎨 {editingExisting ? 'Edit this preset' : 'New preset'}
+          </button>
+          <button type="button" className="btn small" onClick={() => importInputRef.current?.click()}>
+            📂 Import preset…
+          </button>
+          {editingExisting && (
+            <>
+              <button type="button" className="btn small" onClick={() => downloadCustomPreset(editingExisting, CUSTOM_EDITOR_BOARD_SIZE)}>
+                💾 Export
               </button>
-            ))}
-          </div>
+              <button type="button" className="btn small warn" onClick={() => removeCustomPreset(editingExisting.id)}>
+                🗑️ Remove
+              </button>
+            </>
+          )}
+          <input
+            ref={importInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="visually-hidden"
+            aria-label="Import a garden preset file"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) importPresetFile(file);
+              e.target.value = '';
+            }}
+          />
         </div>
 
         <div className="setup-row">

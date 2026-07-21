@@ -79,6 +79,63 @@ describe('createGame', () => {
     expect(Object.keys(s.gardens)).toHaveLength(20);
     expect(s.supply.tunnel).toBe(4); // 8 − 4 preset tunnels
   });
+
+  it('accepts a custom garden layout, bypassing the built-in preset registry', () => {
+    const p = { name: 'X', controller: 'cpu' as const };
+    const s = createGame(
+      {
+        players: [p, p],
+        boardSize: 7,
+        gardenPreset: 'custom:example',
+        customGardens: [
+          { pos: { x: 1, y: 1 }, type: 'dandelion' },
+          { pos: { x: 5, y: 5 }, type: 'maize' },
+        ],
+      },
+      1,
+    );
+    expect(s.config.customGardens).toEqual([
+      { pos: { x: 1, y: 1 }, type: 'dandelion' },
+      { pos: { x: 5, y: 5 }, type: 'maize' },
+    ]);
+    expect(s.gardens['1,1'].type).toBe('dandelion');
+    expect(s.gardens['5,5'].type).toBe('maize');
+    expect(s.supply.dandelion).toBe(7);
+    expect(s.supply.maize).toBe(7);
+  });
+
+  it('rejects a custom layout that collides with a Home Garden space', () => {
+    const p = { name: 'X', controller: 'cpu' as const };
+    expect(() =>
+      createGame(
+        { players: [p, p], boardSize: 7, customGardens: [{ pos: { x: 0, y: 3 }, type: 'tunnel' }] },
+        1,
+      ),
+    ).toThrow(EngineError);
+  });
+
+  it('rejects a custom layout with an out-of-bounds or duplicate position', () => {
+    const p = { name: 'X', controller: 'cpu' as const };
+    expect(() =>
+      createGame(
+        { players: [p, p], boardSize: 7, customGardens: [{ pos: { x: 9, y: 9 }, type: 'tunnel' }] },
+        1,
+      ),
+    ).toThrow(EngineError);
+    expect(() =>
+      createGame(
+        {
+          players: [p, p],
+          boardSize: 7,
+          customGardens: [
+            { pos: { x: 1, y: 1 }, type: 'tunnel' },
+            { pos: { x: 1, y: 1 }, type: 'maize' },
+          ],
+        },
+        1,
+      ),
+    ).toThrow(EngineError);
+  });
 });
 
 // ---------------------------------------------------------------------------

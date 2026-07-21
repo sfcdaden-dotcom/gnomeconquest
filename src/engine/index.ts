@@ -12,7 +12,11 @@ export { createRng, normalizeSeed, rngNext, rngInt, rollDie, shuffled } from './
 export type { Rng } from './rng';
 
 // Game creation & layouts.
-export { createGame, DEFAULT_CONFIG, SUPPLY_PER_TYPE, homePositions, presetGardens } from './setup';
+export { createGame, DEFAULT_CONFIG, SUPPLY_PER_TYPE, PLANTABLE_GARDEN_TYPES, homePositions, presetGardens } from './setup';
+
+// Garden preset registry (UI reads this to render the preset menu).
+export { GARDEN_PRESETS, DEFAULT_GARDEN_PRESET_ID, findGardenPreset } from './gardenPresets';
+export type { GardenPresetDef } from './gardenPresets';
 
 // Core reducer API.
 export { applyAction, getLegalActions, getPlayerToAct, isGameOver, boardGnomes } from './engine';
