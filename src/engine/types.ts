@@ -88,6 +88,15 @@ export interface GameConfig {
    * round-trips through save/replay like the rest of GameConfig.
    */
   customGardens?: Array<{ pos: Pos; type: PlantableGardenType }>;
+  /**
+   * Explicit Home Garden positions, overriding the standard edge-midpoint
+   * formula (`homePositions`). Must have exactly one entry per seat — a
+   * player-built preset that moved the homes supplies all 4 in seat order
+   * (west/north/east/south by convention) and the 2-player case uses indices
+   * 0 and 2 of that array, mirroring how `homePositions` itself picks the
+   * opposite pair for 2 players.
+   */
+  customHomes?: Pos[];
   /** 2 or 4 seats, clockwise. */
   players: Array<{ name: string; controller: PlayerController }>;
 }

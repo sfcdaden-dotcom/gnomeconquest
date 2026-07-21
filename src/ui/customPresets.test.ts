@@ -8,25 +8,102 @@ import {
 } from './customPresets';
 
 describe('customPresets', () => {
-  it('round-trips a valid preset file', () => {
-    const def = buildCustomPresetDef('custom:x', 'My Layout', 'A blurb', 7, [
-      { pos: { x: 1, y: 1 }, type: 'tunnel' },
-      { pos: { x: 5, y: 5 }, type: 'flytrap' },
-    ]);
+  it('round-trips a valid preset file, including moved homes', () => {
+    const movedHomes = [
+      { x: 2, y: 2 },
+      { x: 4, y: 0 },
+      { x: 4, y: 4 },
+      { x: 2, y: 6 },
+    ];
+    const def = buildCustomPresetDef(
+      'custom:x',
+      'My Layout',
+      'A blurb',
+      7,
+      [
+        { pos: { x: 1, y: 1 }, type: 'tunnel' },
+        { pos: { x: 5, y: 5 }, type: 'flytrap' },
+      ],
+      movedHomes,
+    );
     const json = JSON.stringify({
       kind: 'whimsy-wars-garden-preset',
-      version: 1,
+      version: 2,
       label: def.label,
       description: def.description,
       boardSize: 7,
+      homes: def.homes,
       gardens: def.build(7),
     });
     const parsed = parseCustomPresetFile(json);
     expect(parsed.label).toBe('My Layout');
+    expect(parsed.homes).toEqual(movedHomes);
     expect(parsed.build(7)).toEqual([
       { pos: { x: 1, y: 1 }, type: 'tunnel' },
       { pos: { x: 5, y: 5 }, type: 'flytrap' },
     ]);
+  });
+
+  it('defaults to the standard home layout for a v1 file with no homes field', () => {
+    const json = JSON.stringify({
+      kind: 'whimsy-wars-garden-preset',
+      version: 1,
+      label: 'Old Preset',
+      description: '',
+      boardSize: 7,
+      gardens: [{ pos: { x: 1, y: 1 }, type: 'tunnel' }],
+    });
+    const parsed = parseCustomPresetFile(json);
+    expect(parsed.homes).toEqual(reservedHomePositions(7));
+  });
+
+  it('rejects a preset without exactly 4 homes', () => {
+    const json = JSON.stringify({
+      kind: 'whimsy-wars-garden-preset',
+      version: 2,
+      label: 'Bad',
+      description: '',
+      boardSize: 7,
+      homes: [{ x: 0, y: 3 }],
+      gardens: [],
+    });
+    expect(() => parseCustomPresetFile(json)).toThrow(/exactly 4/);
+  });
+
+  it('rejects two homes at the same space', () => {
+    const json = JSON.stringify({
+      kind: 'whimsy-wars-garden-preset',
+      version: 2,
+      label: 'Bad',
+      description: '',
+      boardSize: 7,
+      homes: [
+        { x: 0, y: 3 },
+        { x: 0, y: 3 },
+        { x: 6, y: 3 },
+        { x: 3, y: 6 },
+      ],
+      gardens: [],
+    });
+    expect(() => parseCustomPresetFile(json)).toThrow(/more than one Home Garden/);
+  });
+
+  it('rejects a garden placed on a moved Home Garden space', () => {
+    const json = JSON.stringify({
+      kind: 'whimsy-wars-garden-preset',
+      version: 2,
+      label: 'Bad',
+      description: '',
+      boardSize: 7,
+      homes: [
+        { x: 2, y: 2 },
+        { x: 4, y: 0 },
+        { x: 4, y: 4 },
+        { x: 2, y: 6 },
+      ],
+      gardens: [{ pos: { x: 2, y: 2 }, type: 'tunnel' }],
+    });
+    expect(() => parseCustomPresetFile(json)).toThrow(/Home Garden/);
   });
 
   it('rejects a file that is not JSON', () => {

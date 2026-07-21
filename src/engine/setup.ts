@@ -7,6 +7,8 @@
  *   2 players: seat 0 west (0,3), seat 1 east (6,3)
  *   4 players: seat 0 west (0,3), seat 1 north (3,0), seat 2 east (6,3),
  *              seat 3 south (3,6)
+ * A caller may override this via `customHomes` (e.g. a preset built in the
+ * in-game editor that moved the homes) — see `homePositions` below.
  *
  * Additional-garden layouts ("presets") are registered in gardenPresets.ts —
  * see that file for the list and for how to add a new one.
@@ -93,6 +95,21 @@ function resolveConfig(options: CreateGameOptions): GameConfig {
   if (!Number.isInteger(boardSize) || boardSize < 5 || boardSize % 2 === 0) {
     badConfig('boardSize must be an odd integer >= 5');
   }
+  const customHomes = options.customHomes;
+  if (customHomes) {
+    if (customHomes.length !== playerCount) {
+      badConfig(`customHomes must have exactly ${playerCount} position(s), got ${customHomes.length}`);
+    }
+    const seen = new Set<string>();
+    for (const pos of customHomes) {
+      if (!Number.isInteger(pos.x) || !Number.isInteger(pos.y) || pos.x < 0 || pos.y < 0 || pos.x >= boardSize || pos.y >= boardSize) {
+        badConfig(`customHomes position (${pos.x},${pos.y}) is out of bounds for boardSize ${boardSize}`);
+      }
+      const key = posKey(pos);
+      if (seen.has(key)) badConfig(`customHomes has more than one home at ${key}`);
+      seen.add(key);
+    }
+  }
   const gardenPreset = options.gardenPreset ?? DEFAULT_CONFIG.gardenPreset;
   const customGardens = options.customGardens;
   if (customGardens) {
@@ -124,6 +141,7 @@ function resolveConfig(options: CreateGameOptions): GameConfig {
     centerStar: options.centerStar ?? DEFAULT_CONFIG.centerStar,
     gardenPreset,
     ...(customGardens ? { customGardens } : {}),
+    ...(customHomes ? { customHomes } : {}),
     players: options.players.map((p, i) => ({
       name: p.name ?? `Player ${i + 1}`,
       controller: p.controller,
@@ -146,7 +164,7 @@ function resolveConfig(options: CreateGameOptions): GameConfig {
  */
 export function createGame(options: CreateGameOptions, seed: number): GameState {
   const config = resolveConfig(options);
-  const homes = homePositions(config.boardSize, config.players.length);
+  const homes = config.customHomes ?? homePositions(config.boardSize, config.players.length);
 
   const players: PlayerState[] = config.players.map((p, i) => ({
     id: i as PlayerId,

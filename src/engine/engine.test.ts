@@ -136,6 +136,47 @@ describe('createGame', () => {
       ),
     ).toThrow(EngineError);
   });
+
+  it('accepts custom Home Garden positions', () => {
+    const p = { name: 'X', controller: 'cpu' as const };
+    const s = createGame(
+      { players: [p, p], boardSize: 7, customHomes: [{ x: 2, y: 2 }, { x: 4, y: 4 }] },
+      1,
+    );
+    expect(s.players[0].homePos).toEqual({ x: 2, y: 2 });
+    expect(s.players[1].homePos).toEqual({ x: 4, y: 4 });
+    expect(s.gardens['2,2'].type).toBe('home');
+    expect(s.gardens['4,4'].type).toBe('home');
+  });
+
+  it('rejects customHomes with the wrong count for the seating', () => {
+    const p = { name: 'X', controller: 'cpu' as const };
+    expect(() =>
+      createGame({ players: [p, p], boardSize: 7, customHomes: [{ x: 2, y: 2 }] }, 1),
+    ).toThrow(EngineError);
+    expect(() =>
+      createGame(
+        { players: [p, p, p, p], boardSize: 7, customHomes: [{ x: 2, y: 2 }, { x: 4, y: 4 }] },
+        1,
+      ),
+    ).toThrow(EngineError);
+  });
+
+  it('rejects duplicate or out-of-bounds customHomes positions', () => {
+    const p = { name: 'X', controller: 'cpu' as const };
+    expect(() =>
+      createGame(
+        { players: [p, p], boardSize: 7, customHomes: [{ x: 2, y: 2 }, { x: 2, y: 2 }] },
+        1,
+      ),
+    ).toThrow(EngineError);
+    expect(() =>
+      createGame(
+        { players: [p, p], boardSize: 7, customHomes: [{ x: 2, y: 2 }, { x: 9, y: 9 }] },
+        1,
+      ),
+    ).toThrow(EngineError);
+  });
 });
 
 // ---------------------------------------------------------------------------

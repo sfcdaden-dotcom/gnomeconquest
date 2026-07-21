@@ -90,10 +90,18 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
       return;
     }
     const isCustom = isCustomPresetId(preset);
+    // Custom presets always carry 4 homes (seat order west/north/east/south);
+    // 2-player games use the opposite pair (indices 0 and 2), matching how
+    // the engine's own default layout picks seats for 2 vs 4 players.
+    const customHomes = presetDef.homes && (count === 2 ? [presetDef.homes[0], presetDef.homes[2]] : presetDef.homes);
     const options: CreateGameOptions = {
       gardenPreset: preset,
       ...(isCustom
-        ? { boardSize: CUSTOM_EDITOR_BOARD_SIZE, customGardens: presetDef.build(CUSTOM_EDITOR_BOARD_SIZE) }
+        ? {
+            boardSize: CUSTOM_EDITOR_BOARD_SIZE,
+            customGardens: presetDef.build(CUSTOM_EDITOR_BOARD_SIZE),
+            ...(customHomes ? { customHomes } : {}),
+          }
         : {}),
       centerStar,
       players: seats.slice(0, count).map((s, i) => ({

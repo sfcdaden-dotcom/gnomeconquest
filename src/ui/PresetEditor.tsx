@@ -4,6 +4,11 @@
  * "no localStorage" posture means presets live on disk, not in the browser)
  * and hands the finished preset back so the setup screen can use it right
  * away without re-importing.
+ *
+ * Home Gardens are also movable here: click one to pick it up, then click an
+ * empty space to drop it. There are always exactly 4 (seat order
+ * west/north/east/south by convention) — 2-player games use Home 1 & Home 3,
+ * matching how the engine's default layout already picks the opposite pair.
  */
 
 import { useState } from 'react';
@@ -17,8 +22,8 @@ import {
   PRESET_LABEL_MAX_LENGTH,
   buildCustomPresetDef,
   downloadCustomPreset,
-  isReservedHomePosition,
   makeCustomPresetId,
+  reservedHomePositions,
 } from './customPresets';
 
 type Tool = PlantableGardenType | 'erase';
@@ -42,6 +47,8 @@ export function PresetEditor({ initial, onCancel, onSave }: PresetEditorProps) {
   const [label, setLabel] = useState(initial?.label ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
   const [gardens, setGardens] = useState<Map<string, PlantableGardenType>>(() => initialGardens(initial));
+  const [homes, setHomes] = useState<Pos[]>(() => initial?.homes ?? reservedHomePositions(n));
+  const [pickedHome, setPickedHome] = useState<number | null>(null);
   const [tool, setTool] = useState<Tool>('tunnel');
   const [error, setError] = useState<string | null>(null);
 
@@ -56,8 +63,33 @@ export function PresetEditor({ initial, onCancel, onSave }: PresetEditorProps) {
   for (const type of gardens.values()) counts[type] += 1;
 
   function cellClick(pos: Pos) {
-    if (isReservedHomePosition(n, pos)) return;
     const key = posKey(pos);
+    const homeIdx = homes.findIndex((h) => posKey(h) === key);
+
+    if (pickedHome !== null) {
+      if (homeIdx === pickedHome) {
+        setPickedHome(null); // clicked its own space again: cancel the pick
+        return;
+      }
+      if (homeIdx !== -1) {
+        setPickedHome(homeIdx); // switch to carrying that home instead
+        return;
+      }
+      if (gardens.has(key)) {
+        setError('Clear the garden there first, or pick a different space.');
+        return;
+      }
+      setHomes((hs) => hs.map((h, i) => (i === pickedHome ? pos : h)));
+      setPickedHome(null);
+      setError(null);
+      return;
+    }
+
+    if (homeIdx !== -1) {
+      setPickedHome(homeIdx);
+      return;
+    }
+
     setGardens((prev) => {
       const next = new Map(prev);
       if (tool === 'erase') {
@@ -85,7 +117,7 @@ export function PresetEditor({ initial, onCancel, onSave }: PresetEditorProps) {
       const [x, y] = key.split(',').map(Number);
       return { pos: { x, y }, type };
     });
-    const def = buildCustomPresetDef(initial?.id ?? makeCustomPresetId(), label.trim(), description, n, gardenList);
+    const def = buildCustomPresetDef(initial?.id ?? makeCustomPresetId(), label.trim(), description, n, gardenList, homes);
     downloadCustomPreset(def, n);
     onSave(def);
   }
@@ -144,8 +176,19 @@ export function PresetEditor({ initial, onCancel, onSave }: PresetEditorProps) {
           >
             🧹 Erase
           </button>
-          <button type="button" className="btn small" onClick={() => setGardens(new Map())} title="Clear the whole board">
+          <button type="button" className="btn small" onClick={() => setGardens(new Map())} title="Clear all planted gardens">
             🗑️ Clear board
+          </button>
+          <button
+            type="button"
+            className="btn small"
+            onClick={() => {
+              setHomes(reservedHomePositions(n));
+              setPickedHome(null);
+            }}
+            title="Put all 4 Home Gardens back at their default spaces"
+          >
+            ↺ Reset homes
           </button>
         </div>
 
@@ -154,22 +197,33 @@ export function PresetEditor({ initial, onCancel, onSave }: PresetEditorProps) {
             {Array.from({ length: n * n }, (_, i) => {
               const pos = { x: i % n, y: Math.floor(i / n) };
               const key = posKey(pos);
-              const reserved = isReservedHomePosition(n, pos);
+              const homeIdx = homes.findIndex((h) => posKey(h) === key);
               const type = gardens.get(key);
               const classes = ['cell'];
               if (type) classes.push(`g-${type}`);
-              if (reserved) classes.push('reserved');
+              if (homeIdx !== -1) classes.push('editor-home');
+              if (pickedHome === homeIdx && homeIdx !== -1) classes.push('picked');
+              const label =
+                homeIdx !== -1
+                  ? `Home ${homeIdx + 1}${pickedHome === homeIdx ? ' (selected — click a space to move it)' : ''}`
+                  : type
+                    ? GARDEN_META[type].label
+                    : null;
               return (
                 <button
                   key={key}
                   type="button"
                   className={classes.join(' ')}
-                  disabled={reserved}
                   onClick={() => cellClick(pos)}
-                  aria-label={`Space ${key}${reserved ? ', reserved for a Home Garden' : type ? `, ${GARDEN_META[type].label}` : ''}`}
-                  title={reserved ? 'Reserved for a Home Garden' : type ? GARDEN_META[type].label : `Space ${key}`}
+                  aria-label={`Space ${key}${label ? `, ${label}` : ''}`}
+                  title={label ?? `Space ${key}`}
                 >
-                  {reserved && <span className="garden-emoji">🏡</span>}
+                  {homeIdx !== -1 && (
+                    <>
+                      <span className="garden-emoji">🏡</span>
+                      <span className="home-index">{homeIdx + 1}</span>
+                    </>
+                  )}
                   {type && <span className="garden-emoji">{GARDEN_META[type].emoji}</span>}
                 </button>
               );
@@ -177,7 +231,9 @@ export function PresetEditor({ initial, onCancel, onSave }: PresetEditorProps) {
           </div>
         </div>
         <p className="preset-description muted small">
-          Reserved (dimmed) spaces are Home Gardens for every seating — presets can't use them.
+          {pickedHome !== null
+            ? `Moving Home ${pickedHome + 1} — click an empty space to drop it, or click it again to cancel.`
+            : 'Click a 🏡 Home Garden to move it. 2-player games use Home 1 & Home 3; 4-player games use all four.'}
         </p>
 
         {error && <div className="setup-error">{error}</div>}

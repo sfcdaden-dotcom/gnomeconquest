@@ -24,6 +24,14 @@ export interface GardenPresetDef {
   minBoardSize: number;
   /** Compute the garden positions for a given (odd) board size. */
   build: (boardSize: number) => Array<{ pos: Pos; type: PlantableGardenType }>;
+  /**
+   * Optional override of where the 4 Home Gardens sit (seat order
+   * west/north/east/south by convention; 2-player games use indices 0 and
+   * 2). Only player-built custom presets set this — built-in presets leave
+   * it undefined and use the standard edge-midpoint formula
+   * (`homePositions`) for whatever player count is chosen.
+   */
+  homes?: Pos[];
 }
 
 export const GARDEN_PRESETS: readonly GardenPresetDef[] = [

@@ -25,12 +25,9 @@ export function reservedHomePositions(boardSize: number): Pos[] {
   ];
 }
 
-export function isReservedHomePosition(boardSize: number, pos: Pos): boolean {
-  return reservedHomePositions(boardSize).some((p) => p.x === pos.x && p.y === pos.y);
-}
-
 const CUSTOM_PRESET_FILE_KIND = 'whimsy-wars-garden-preset';
-const CUSTOM_PRESET_FILE_VERSION = 1;
+/** v1: gardens only, homes fixed at the standard formula. v2: added movable `homes`. */
+const CUSTOM_PRESET_FILE_VERSION = 2;
 
 /** Shared with the editor's `<input maxLength>` so imported files can't carry oversized text. */
 export const PRESET_LABEL_MAX_LENGTH = 40;
@@ -42,6 +39,8 @@ interface CustomPresetFile {
   label: string;
   description: string;
   boardSize: number;
+  /** 4 positions, seat order west/north/east/south by convention. Absent in v1 files. */
+  homes?: Pos[];
   gardens: Array<{ pos: Pos; type: PlantableGardenType }>;
 }
 
@@ -56,6 +55,7 @@ export function buildCustomPresetDef(
   description: string,
   boardSize: number,
   gardens: Array<{ pos: Pos; type: PlantableGardenType }>,
+  homes: Pos[],
 ): GardenPresetDef {
   return {
     id,
@@ -63,6 +63,7 @@ export function buildCustomPresetDef(
     description: description.trim() || 'A custom garden layout.',
     minBoardSize: boardSize,
     build: () => gardens,
+    homes,
   };
 }
 
@@ -74,6 +75,7 @@ export function downloadCustomPreset(def: GardenPresetDef, boardSize: number): v
     label: def.label,
     description: def.description,
     boardSize,
+    homes: def.homes ?? reservedHomePositions(boardSize),
     gardens: def.build(boardSize),
   };
   const blob = new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' });
@@ -114,30 +116,47 @@ export function parseCustomPresetFile(raw: string): GardenPresetDef {
   }
   if (!Array.isArray(f.gardens)) throw new Error('The preset has no garden layout.');
 
+  const inBounds = (pos: unknown): pos is Pos => {
+    const p = pos as Partial<Pos> | null | undefined;
+    return (
+      !!p &&
+      Number.isInteger(p.x) &&
+      Number.isInteger(p.y) &&
+      p.x! >= 0 &&
+      p.y! >= 0 &&
+      p.x! < f.boardSize! &&
+      p.y! < f.boardSize!
+    );
+  };
+
+  // v1 files predate movable homes — they always used the standard formula.
+  const homesRaw: unknown = f.homes ?? reservedHomePositions(f.boardSize);
+  if (!Array.isArray(homesRaw) || homesRaw.length !== 4) {
+    throw new Error('The preset must have exactly 4 Home Garden positions.');
+  }
+  const homeKeys = new Set<string>();
+  const homes: Pos[] = [];
+  for (const pos of homesRaw) {
+    if (!inBounds(pos)) throw new Error('The preset has a Home Garden outside the board.');
+    const key = posKey(pos);
+    if (homeKeys.has(key)) throw new Error(`The preset has more than one Home Garden at ${key}.`);
+    homeKeys.add(key);
+    homes.push({ x: pos.x, y: pos.y });
+  }
+
   const plantable = new Set<string>(PLANTABLE_GARDEN_TYPES);
-  const reserved = new Set(reservedHomePositions(f.boardSize).map(posKey));
   const seen = new Set<string>();
   const gardens: Array<{ pos: Pos; type: PlantableGardenType }> = [];
   for (const g of f.gardens) {
     const pos = (g as { pos?: Pos }).pos;
     const type = (g as { type?: string }).type;
-    if (
-      !pos ||
-      !Number.isInteger(pos.x) ||
-      !Number.isInteger(pos.y) ||
-      pos.x < 0 ||
-      pos.y < 0 ||
-      pos.x >= f.boardSize ||
-      pos.y >= f.boardSize
-    ) {
-      throw new Error('The preset has a garden outside the board.');
-    }
+    if (!inBounds(pos)) throw new Error('The preset has a garden outside the board.');
     if (!type || !plantable.has(type)) throw new Error(`The preset has an unknown garden type "${String(type)}".`);
-    const key = posKey(pos);
-    if (reserved.has(key)) throw new Error(`The preset places a garden on a Home Garden space (${key}).`);
+    const key = posKey(pos!);
+    if (homeKeys.has(key)) throw new Error(`The preset places a garden on a Home Garden space (${key}).`);
     if (seen.has(key)) throw new Error(`The preset has more than one garden at ${key}.`);
     seen.add(key);
-    gardens.push({ pos: { x: pos.x, y: pos.y }, type: type as PlantableGardenType });
+    gardens.push({ pos: { x: pos!.x, y: pos!.y }, type: type as PlantableGardenType });
   }
 
   return buildCustomPresetDef(
@@ -146,5 +165,6 @@ export function parseCustomPresetFile(raw: string): GardenPresetDef {
     typeof f.description === 'string' ? f.description.slice(0, PRESET_DESCRIPTION_MAX_LENGTH) : '',
     f.boardSize,
     gardens,
+    homes,
   );
 }
