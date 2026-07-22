@@ -19,7 +19,17 @@ export { GARDEN_PRESETS, DEFAULT_GARDEN_PRESET_ID, findGardenPreset } from './ga
 export type { GardenPresetDef } from './gardenPresets';
 
 // Core reducer API.
-export { applyAction, getLegalActions, getPlayerToAct, isGameOver, boardGnomes } from './engine';
+export {
+  applyAction,
+  getLegalActions,
+  getLegalActionIntents,
+  getTargetOptions,
+  getPlayerToAct,
+  isGameOver,
+  boardGnomes,
+} from './engine';
+export { MAX_TARGET_COMBINATIONS } from './legalActions';
+export { MAX_SETTLE_STEPS } from './settle';
 
 // Read-only state queries (safe for UI use).
 export {

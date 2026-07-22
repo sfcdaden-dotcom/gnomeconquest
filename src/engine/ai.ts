@@ -51,7 +51,7 @@
 
 import type { Action, CardId, CardTargets, GameState, PendingDecision, PlantableGardenType, PlayerId, Pos, Unit } from './types';
 import { EngineError } from './types';
-import { getLegalActions, getPlayerToAct } from './engine';
+import { getLegalActionIntents, getPlayerToAct, getTargetOptions } from './engine';
 import { getCardDef } from './cards';
 import {
   canSpawnGnome,
@@ -70,11 +70,39 @@ import {
   wishCap,
 } from './helpers';
 
-/** Pick one legal action for the player who must act. */
+/**
+ * Pick one legal action for the player who must act.
+ *
+ * The AI plans against `getLegalActionIntents` (card plays without targets)
+ * and supplies targets itself through `planCardPlay` and the respond-window
+ * policies, which is cheaper than expanding every target combination. As a
+ * structural guarantee that it can never emit a half-built action, whatever it
+ * picks goes through `completeTargets` before being returned.
+ */
 export function chooseAiAction(state: GameState): Action {
+  return completeTargets(state, chooseAiActionInner(state));
+}
+
+/**
+ * Fill in targets for a card play that still needs them, using the engine's
+ * own enumeration. A no-op for every action the planners target themselves;
+ * it exists so that a future card without a dedicated planner degrades to
+ * "play it with the first valid targets" instead of throwing at dispatch.
+ */
+function completeTargets(state: GameState, action: Action): Action {
+  if (action.type !== 'playCard' && action.type !== 'respondPlayCard') return action;
+  if (action.targets !== undefined) return action;
+  const def = getCardDef(action.cardId);
+  if (!def?.needsTargets) return action;
+  const options = getTargetOptions(state, action);
+  if (options.length === 0) return action; // nothing valid; dispatch will report why
+  return { ...action, targets: options[0] };
+}
+
+function chooseAiActionInner(state: GameState): Action {
   const actor = getPlayerToAct(state);
   if (actor === null) throw new EngineError('ILLEGAL_ACTION', 'Game is finished; no action to choose');
-  const legal = getLegalActions(state, actor);
+  const legal = getLegalActionIntents(state, actor);
   if (legal.length === 0) throw new EngineError('INTERNAL', 'No legal actions available for the player to act');
 
   const d = state.pendingDecision;
@@ -144,9 +172,9 @@ export function chooseAiAction(state: GameState): Action {
   // 0.1 baseline via scoreActionPhase; under Antsy Pants it may be absent
   // entirely, in which case the best remaining (forced) action is taken.
   //
-  // `playCard` is enumerated WITHOUT targets (see getLegalActions); planCardPlay
-  // supplies a concrete, `validate`-checked targeted action plus its score, so
-  // the action we return is always dispatchable. Because getPlayerToAct only
+  // `playCard` intents carry no targets; planCardPlay supplies a concrete,
+  // `validate`-checked targeted action plus its score, so the action we return
+  // is always dispatchable. Because getPlayerToAct only
   // routes here for the active player, `endTurn` or a forced move is always
   // present — `best` never falls back to an untargeted playCard.
   let best: Action | null = null;

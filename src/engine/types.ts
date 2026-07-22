@@ -277,10 +277,14 @@ export interface CardStackEntry {
   player: PlayerId;
   cardId: CardId;
   targets?: CardTargets;
-  /** Nope-Gnome sets this on its victim; a cancelled card resolves to nothing. */
+  /** A counter-card sets this on its victim; a cancelled card resolves to nothing. */
   cancelled: boolean;
-  /** Nope-Gnome only: index into the stack of the entry it cancels. */
-  nopeTarget?: number;
+  /**
+   * Set for cards played in a response window whose definition is flagged
+   * `targetsRespondedCard` (Nope-Gnome): the stack index of the entry they
+   * were played in response to.
+   */
+  respondsToStackIndex?: number;
 }
 
 export type TimedEffectKind = 'greatWall' | 'lostInMaize';

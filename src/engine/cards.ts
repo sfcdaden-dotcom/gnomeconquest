@@ -70,12 +70,22 @@ import { handleEntry, makeGarden } from './gardens';
 export type CardTiming = 'sudden' | 'ritual';
 
 /**
- * Declarative targeting spec (for UIs to build pickers). The authoritative
- * validation is each card's `validate` function.
+ * Declarative targeting spec. Two consumers:
+ *  - UIs, to build pickers and describe what is wanted;
+ *  - the engine's target enumerator (legalActions.ts), which uses the slot
+ *    kinds + counts to generate every candidate `CardTargets` payload and
+ *    keeps only those the card's own `validate` accepts.
+ *
+ * The authoritative validation is always each card's `validate` function; the
+ * spec only bounds the search space.
+ *
+ * `ordered` (multi-slot only): when true, [a,b] and [b,a] are DIFFERENT target
+ * payloads and both are enumerated (Instigation — the first gnome is the
+ * attacker). When false/absent, only one order per combination is generated.
  */
 export interface TargetSpec {
-  units?: { count: number; description: string };
-  spaces?: { count: number; description: string };
+  units?: { count: number; description: string; ordered?: boolean };
+  spaces?: { count: number; description: string; ordered?: boolean };
   players?: { count: number; description: string };
   cards?: { count: number; from: 'discard'; description: string };
   gardenType?: { description: string };
@@ -88,8 +98,16 @@ export interface WhimsyCardDef {
   timing: CardTiming;
   /** Copies in the deck (designer confirmed: 2 each). */
   copies: number;
-  /** Playable only inside a cardResponse window (Nope-Gnome). */
+  /** Playable only inside a cardResponse window (Nope-Gnome today). */
   respondOnly?: boolean;
+  /**
+   * The card acts on the card it is responding to, rather than on targets the
+   * player picks. When played inside a cardResponse window the router records
+   * the responded-to stack index on the entry (`respondsToStackIndex`), which
+   * the card's `resolve` reads. This is what makes response routing generic:
+   * a second counter-card only needs this flag, not a change to the router.
+   */
+  targetsRespondedCard?: boolean;
   /** Does this card require a `targets` payload? */
   needsTargets: boolean;
   targetSpec?: TargetSpec;
@@ -364,9 +382,10 @@ const nopeGnome: WhimsyCardDef = {
   timing: 'sudden',
   copies: 2,
   respondOnly: true,
+  targetsRespondedCard: true,
   needsTargets: false, // its target is implicit: the card it responds to
   resolve: (d, e) => {
-    const idx = e.nopeTarget;
+    const idx = e.respondsToStackIndex;
     if (idx === undefined || idx < 0 || idx >= d.cardStack.length) {
       return fizzle(d, e, 'the countered card already left the stack');
     }
@@ -486,7 +505,9 @@ const instigation: WhimsyCardDef = {
   copies: 2,
   needsTargets: true,
   targetSpec: {
-    units: { count: 2, description: 'two gnomes with different owners (first chosen = attacker)' },
+    // Ordered: the first gnome is the attacker, so [a,b] and [b,a] are
+    // genuinely different plays and both are enumerated.
+    units: { count: 2, description: 'two gnomes with different owners (first chosen = attacker)', ordered: true },
   },
   hasAnyPlay: (s) => {
     const owners = new Set(
@@ -929,6 +950,22 @@ export function getCardDef(id: CardId): WhimsyCardDef | null {
   return cardById.get(id) ?? null;
 }
 
+/**
+ * TEST-ONLY seam: add a card definition to the lookup for the duration of a
+ * test, returning a function that removes it again. Deliberately NOT exported
+ * from `src/engine/index.ts` — it exists so tests can prove that the engine's
+ * routing and enumeration are driven by card metadata rather than by hard-coded
+ * card ids (e.g. registering a second `respondOnly` card). It does not touch
+ * CARD_DEFINITIONS, so the deck composition is unaffected.
+ */
+export function __registerTestCard(def: WhimsyCardDef): () => void {
+  if (cardById.has(def.id)) throw new Error(`card ${def.id} already exists`);
+  cardById.set(def.id, def);
+  return () => {
+    cardById.delete(def.id);
+  };
+}
+
 export function getCurseDef(id: CardId): CurseCardDef | null {
   return curseById.get(id) ?? null;
 }
@@ -1061,14 +1098,15 @@ export function whyCannotPlayNow(state: GameState, player: PlayerId, cardId: Car
 /**
  * Move the card from hand to the discard, push it onto the stack and open
  * response windows for every other playing player. Throws on bad targets.
- * `nopeTarget` is set when the card is Nope-Gnome countering a stack entry.
+ * `respondsToStackIndex` is set when a `targetsRespondedCard` card (Nope-Gnome)
+ * is played inside a response window; its `resolve` reads it off the entry.
  */
 export function playCardFromHand(
   draft: GameState,
   player: PlayerId,
   cardId: CardId,
   targets: CardTargets | undefined,
-  nopeTarget?: number,
+  respondsToStackIndex?: number,
 ): void {
   const p = getPlayer(draft, player);
   const idx = p.hand.indexOf(cardId);
@@ -1082,8 +1120,11 @@ export function playCardFromHand(
   p.hand.splice(idx, 1);
   draft.discard.push(cardId); // a cancelled card still goes to the discard
   const entry: CardStackEntry = { player, cardId, cancelled: false };
-  if (targets !== undefined) entry.targets = targets;
-  if (nopeTarget !== undefined) entry.nopeTarget = nopeTarget;
+  // Copy the payload rather than aliasing the caller's action object into the
+  // state: enumerated actions share candidate Pos objects between them, and
+  // game state must never hold a reference a caller still owns.
+  if (targets !== undefined) entry.targets = structuredClone(targets);
+  if (respondsToStackIndex !== undefined) entry.respondsToStackIndex = respondsToStackIndex;
   draft.cardStack.push(entry);
   pushEvent(draft, { type: 'cardPlayed', player, cardId });
   draft.responseQueue = otherPlayingPlayers(draft, player);
@@ -1160,8 +1201,11 @@ export function handleCardResponsePlay(
   if (!d.playableCards.includes(cardId)) {
     badArg(`Card ${cardId} is not playable in this response window`);
   }
-  const nopeTarget = cardId === 'nope-gnome' ? d.stackIndex : undefined;
+  // Generic: any card whose definition says it acts on the card it responds to
+  // gets the responded-to stack index recorded. No card ids appear here.
+  const def = getCardDef(cardId);
+  const respondsToStackIndex = def?.targetsRespondedCard ? d.stackIndex : undefined;
   draft.pendingDecision = null;
   if (draft.responseQueue[0] === player) draft.responseQueue.shift();
-  playCardFromHand(draft, player, cardId, targets, nopeTarget);
+  playCardFromHand(draft, player, cardId, targets, respondsToStackIndex);
 }
