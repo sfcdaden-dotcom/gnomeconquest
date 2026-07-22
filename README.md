@@ -17,7 +17,13 @@ npm run dev        # play at the printed localhost URL
 npm test           # vitest: unit + seeded AI-vs-AI simulation suite
 npm run lint       # oxlint
 npm run build      # tsc -b (strict) && vite build
+
+npx playwright install chromium   # once, for the browser tests
+npm run test:e2e   # playwright: builds, serves and plays the app in a browser
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of the above from a clean `npm ci` on
+every push and pull request.
 
 ## Architecture in one paragraph
 
@@ -35,9 +41,11 @@ actions without any UI.
 ## Project layout
 
 ```
-src/engine/   types, RNG, setup, reducer (engine.ts), gardens, fights,
-              cards (data-driven), AI, tests
+src/engine/   types, RNG, setup; the reducer split by responsibility
+              (engine facade, actions, turns, settle, elimination,
+              legalActions), gardens, fights, cards (data-driven), AI, tests
 src/ui/       App shell, setup screen, game screen, board, panels, meta text
+e2e/          Playwright browser tests (play the real app through the DOM)
 RULES.md      tabletop rules (with [RULING] clarifications)
 CARDS.md      the 23 Whimsy cards + 5 Curses
 ENGINE_API.md engine contracts, settle-loop priorities, decision model

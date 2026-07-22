@@ -15,6 +15,32 @@ re-exported from `helpers.ts` (`posKey`, `unitsAt`, `wishCap`, …) and the card
 lookups from `cards.ts` (`getCardDef`, …). The heuristic CPU lives behind
 `chooseAiAction(state)` and uses only this public API.
 
+## Module layout
+
+Import from the `src/engine/index.ts` barrel only — the split below is an
+implementation detail and may move again.
+
+| File | Responsibility |
+|---|---|
+| `engine.ts` | public façade: `applyAction`, `isGameOver`, re-exports |
+| `actions.ts` | action dispatch + Action-Phase handlers (move/plant/draw/play) |
+| `turns.ts` | roll-off, turn start/end, movement legality, `getPlayerToAct` |
+| `settle.ts` | the auto-advance loop and its convergence diagnostics |
+| `elimination.ts` | eliminations, snailify, win detection |
+| `legalActions.ts` | legal-action enumeration + card-target expansion |
+| `gardens.ts` | harvests, planting, entry effects |
+| `fights.ts` | fight resolution (Respond → Roll → Resolve) |
+| `cards.ts` | card framework, definitions, the card stack |
+| `helpers.ts` | shared queries and draft mutators |
+| `setup.ts` / `gardenPresets.ts` / `rng.ts` / `types.ts` | creation, layouts, RNG, types |
+
+Dependencies run one way through the top layer — `engine → {actions, settle,
+legalActions} → turns → elimination → {gardens, cards, fights} → helpers` — so
+the split introduces no cycles. The rules layer keeps its pre-existing mutual
+imports (`cards ↔ fights`, `cards → gardens → fights`): a card can queue a
+fight and a fight can play a card, which is inherent to the rules rather than
+an artifact of the file layout.
+
 ## Core contracts
 
 1. **Purity / immutability.** `applyAction` deep-clones, mutates the clone
@@ -36,7 +62,7 @@ lookups from `cards.ts` (`getCardDef`, …). The heuristic CPU lives behind
 
 After dispatching an action, `applyAction` "settles" — it auto-advances
 everything that needs no human input and stops at the next decision or
-Action-Phase idle. **Priority order matters** (`engine.ts settle()`):
+Action-Phase idle. **Priority order matters** (`settle.ts`):
 
 1. `finished` → done.
 2. `pendingDecision` → stop and wait.
@@ -50,6 +76,16 @@ Action-Phase idle. **Priority order matters** (`engine.ts settle()`):
 8. Harvest Phase (`continueHarvest`) — built lazily at first entry, so a
    turn-start Magic Drain sacrifice resolves *before* harvests.
 9. Otherwise: Action Phase, waiting for the active player.
+
+Every branch must make progress, so the loop terminates. `MAX_SETTLE_STEPS`
+(1,000) is a bug net, not a rules mechanism: real play settles in single-digit
+steps (measured max **6** across 48 complete AI games — Easy/Normal/Hard × 8
+seeds × 2- and 4-player). Overrunning it throws
+`EngineError('INTERNAL')` carrying a one-line state snapshot — status, phase,
+current player, pending decision kind + player, whether a fight is live, card
+stack / response queue / fight queue / elimination queue depths, harvest
+progress, `turnMustEnd` and the step count — so the stalled branch is
+identifiable from the message alone.
 
 ## Turn structure
 
@@ -80,10 +116,35 @@ Action-Phase idle. **Priority order matters** (`engine.ts settle()`):
 | `sacrificeGnome` (Magic Drain) | `sacrificeGnome` |
 | `snailMove` (Snailmaggedon) | `snailMove`, `declineEffect` |
 
-`getLegalActions` enumerates every answer. `playCard` / `respondPlayCard`
-actions are enumerated **without targets**; targeted cards additionally need a
-`CardTargets` payload satisfying the card's own `validate` (also exposed on the
-`WhimsyCardDef` so UIs can pre-check picks).
+### The legal-action contract
+
+`getLegalActions` enumerates every answer, and **every action it returns is
+complete and immediately executable** — `applyAction` will not reject it for
+missing or invalid targets. Targeted cards are expanded into one action per
+valid `CardTargets` payload, so no consumer needs card-specific knowledge to
+finish an action the engine called legal.
+
+Two lower-level entry points exist for callers that do not want that expansion
+(it is quadratic in the board area for two-space cards):
+
+```ts
+getLegalActionIntents(state[, player]) → Action[]     // card plays WITHOUT targets
+getTargetOptions(state, intent)        → CardTargets[] // every valid payload for one intent
+```
+
+`getLegalActions` is exactly the composition of the two. Use the pair when
+building an incremental target picker (filter the payload list by the picks so
+far — this is what `GameScreen` does) or when planning moves without paying for
+the expansion (this is what the AI does). Enumeration is generic: candidate
+values come from the card's `targetSpec` slot kinds and the card's own
+`validate` is the only judge, so adding a card requires no enumerator change.
+
+A `targetSpec` slot may set `ordered: true` when the order of the picks is
+meaningful (Instigation: the first gnome is the attacker), in which case both
+orders are enumerated; otherwise one canonical order is emitted per
+combination. Enumeration per card is capped by `MAX_TARGET_COMBINATIONS`
+(20,000) as a safety net; no shipped card approaches it on supported board
+sizes, and a test asserts that.
 
 ## Cards
 
@@ -95,8 +156,21 @@ the stack resolves LIFO; targets are validated at play time (throw) and again
 at resolution (fizzle: logged, no effect).
 
 Timing: **Sudden** — any time no decision is pending, plus inside Respond
-windows; **Ritual** — only the owner's Action Phase. **Nope-Gnome** — only
-inside `cardResponse` windows.
+windows; **Ritual** — only the owner's Action Phase. A card flagged
+`respondOnly` (Nope-Gnome today) is playable **only** inside `cardResponse`
+windows, and never inside fight Respond windows.
+
+Response routing is driven entirely by the card definition, never by card id:
+
+| Flag on `WhimsyCardDef` | Meaning |
+|---|---|
+| `respondOnly` | playable only inside a `cardResponse` window |
+| `targetsRespondedCard` | the router records the responded-to stack index on the stack entry as `respondsToStackIndex`, which the card's `resolve` reads |
+
+Adding a second counter-card therefore needs only these two flags — no change
+to the action router (`actions.ts`) or to `cards.ts`'s window handling. See
+`responseRouting.test.ts`, which registers a fixture counter-card and proves
+the path end to end.
 
 ## Rules interpretations ([RULING] decisions the code encodes)
 
@@ -108,7 +182,7 @@ inside `cardResponse` windows.
   fight die is a system roll.
 - Tunnel *harvest* destinations include "any garden occupied by your own
   gnome", which includes the tunnel itself — choosing it means staying put.
-- Movement legality (`moveDestinations` in engine.ts) is the single source of
+- Movement legality (`moveDestinations` in turns.ts) is the single source of
   truth shared by `doMove`, `getLegalActions` and the Antsy Pants check:
   orthogonal, on-board, not Great-Walled, exit not locked by Lost In The
   Maize, maize exit cost payable.

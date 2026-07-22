@@ -21,17 +21,23 @@ blocks · **P3** opportunistic.
 ## P2
 
 - ~~**AI fight-respond enumeration can suggest unplayable-without-targets
-  cards.**~~ Partially addressed: the AI now only ever dispatches
-  `respondPlayCard` for cards it can fully target (`four-leaf-clover` /
-  `snake-eyes` with a player target / `gnomebody-dies` / `nope-gnome`), so the
-  trap no longer bites us. The underlying API sharp edge remains — `getLegalActions`
-  still enumerates `respondPlayCard` without targets — so keep the note for any
-  future consumer: attach a target-requirement flag or enumerate only
-  self-contained cards.
-- **`respondOnly` cards other than Nope-Gnome are untested territory.** The
-  routing assumes Nope-Gnome is the only respond-only card (`cardId ===
-  'nope-gnome'` special case in `handleCardResponsePlay`). Generalize via the
-  card def if the designer adds more.
+  cards.**~~ **FIXED 2026-07-22.** `getLegalActions` now returns only complete,
+  executable actions: targeted card plays are expanded into one action per
+  valid `CardTargets` payload, enumerated generically from each card's
+  `targetSpec` + `validate` (`legalActions.ts`). The cheap untargeted form
+  moved to `getLegalActionIntents`, with `getTargetOptions(state, intent)`
+  supplying payloads; the AI plans on intents and passes whatever it picks
+  through `completeTargets`, so it is now structurally incapable of emitting a
+  half-built action. Covered by `legalActions.test.ts`, including a whole-game
+  test that dispatches every enumerated action at every state.
+- ~~**`respondOnly` cards other than Nope-Gnome are untested territory.**~~
+  **FIXED 2026-07-22.** The `cardId === 'nope-gnome'` special case is gone;
+  `handleCardResponsePlay` now consults the card definition's
+  `targetsRespondedCard` flag and records `respondsToStackIndex` on the stack
+  entry (renamed from `nopeTarget`). A second counter-card needs only the two
+  flags. `responseRouting.test.ts` registers fixture cards (via the test-only
+  `__registerTestCard` seam) and proves the generic path, including that a
+  `respondOnly` card *without* the counter flag gets no stack index.
 - ~~**Rules audit — remaining open questions.**~~ **RULED 2026-07-22** (bulk
   audit done 2026-07-16 while writing the per-card tests; the maize-roll
   divergence it found is fixed): Center Star wish-cap overflow keeps Wishes
@@ -48,6 +54,19 @@ blocks · **P3** opportunistic.
   entirely — see the AI difficulty doc comment at the top of `ai.ts`).
 
 ## P3
+
+- **Target enumeration is quadratic for two-space cards.** `getLegalActions`
+  expands Pocket Shovel / Plot Twist into C(boardArea, 2) candidate payloads
+  (7,260 on an 11×11) and filters them through `validate`. Fine today — the UI
+  and AI both use `getLegalActionIntents` + `getTargetOptions` and never pay
+  for the full expansion, and `MAX_TARGET_COMBINATIONS` caps the worst case —
+  but a future card with three space slots would need per-slot pruning
+  (candidate domains narrowed before the cartesian product) rather than the
+  current generate-and-filter.
+- **Browser tests cover the happy path only.** `e2e/gameplay.spec.ts` drives
+  setup → roll-off → harvest → move → plant → fight → response window → end
+  turn on a fixed seed. Not covered: 4-player games, CPU seats, the snail
+  path, elimination/end-game overlays, the preset editor, and mobile layout.
 
 - ~~**AI holds some situational cards.**~~ **DONE 2026-07-22 for Hard.**
   `planCardPlay` now has board-state-aware heuristics for all 6 (wall an
