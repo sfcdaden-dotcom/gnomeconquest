@@ -246,15 +246,20 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
       }
     }
 
-    // 4) Select (or cycle through) own movable units on the clicked space.
-    const movable = unitsAt(state, pos).filter(
-      (u) => u.owner === playerToAct && legal.some((a) => a.type === 'move' && a.unitId === u.id),
+    // 4) Select (or cycle through) own actionable units on the clicked space —
+    // "actionable" means a legal move OR a legal plant at that space (a gnome
+    // that already moved this turn can't move again, but can still plant).
+    const actionable = unitsAt(state, pos).filter(
+      (u) =>
+        u.owner === playerToAct &&
+        (legal.some((a) => a.type === 'move' && a.unitId === u.id) ||
+          legal.some((a) => a.type === 'plant' && samePos(a.pos, pos))),
     );
-    if (movable.length > 0) {
-      let next = movable[0];
+    if (actionable.length > 0) {
+      let next = actionable[0];
       if (sel.kind === 'unit') {
-        const i = movable.findIndex((u) => u.id === sel.unitId);
-        if (i >= 0) next = movable[(i + 1) % movable.length];
+        const i = actionable.findIndex((u) => u.id === sel.unitId);
+        if (i >= 0) next = actionable[(i + 1) % actionable.length];
       }
       setSel({ kind: 'unit', unitId: next.id });
       return;
