@@ -42,11 +42,24 @@ import { canPlantAt } from './gardens';
 import { antsyPantsViolators, getPlayerToAct, moveDestinations } from './turns';
 
 /**
- * Safety net on the combinatorial expansion of one card's targets. No shipped
- * card comes close on supported board sizes (the largest is a two-space card
- * on an 11×11: C(121,2) = 7,260) — see the enumeration test, which asserts
- * nothing truncates. Beyond this, the returned payload list is a valid but
- * incomplete subset; `getTargetOptions` stays the authority for picking.
+ * Work limit on the combinatorial expansion of one card's targets, counted in
+ * candidate payloads examined (not payloads returned).
+ *
+ * Exceeding it throws rather than truncating. Truncating would silently drop
+ * legal plays — and because the limit counts candidates *examined*, the drops
+ * would not even be proportional to a card's own breadth: a narrow card like
+ * Plot Twist (2·n·(n-1) valid pairs) shares the budget with the rejected
+ * pairs, so it would quietly lose plays long before its own output got large.
+ * A loud failure keeps the promise that what `getLegalActions` returns is the
+ * complete set.
+ *
+ * Headroom: the widest shipped card is a two-space card, costing C(n², 2)
+ * candidates — 1,176 on the default 7×7, 7,260 on 11×11, 14,196 on 13×13. The
+ * limit is first reached at 15×15 (25,200), which no game configuration
+ * produces: the setup UI does not expose board size and the custom-preset
+ * editor is fixed at 7×7, so this is reachable only by calling `createGame`
+ * directly with `boardSize >= 15`. See TECH_DEBT.md for the real fix
+ * (per-slot candidate pruning before the cartesian product).
  */
 export const MAX_TARGET_COMBINATIONS = 20000;
 
@@ -241,7 +254,12 @@ export function getTargetOptions(state: GameState, intent: Action): CardTargets[
   const accept = (targets: CardTargets) => {
     if (!def.validate || def.validate(state, intent.player, targets) === null) combos.push(targets);
   };
-  expandSlots(slots, 0, {}, accept, { generated: 0 });
+  expandSlots(slots, 0, {}, accept, {
+    examined: 0,
+    describe: () =>
+      `enumerating targets for ${intent.cardId} on a ${state.config.boardSize}×${state.config.boardSize} board ` +
+      `exceeded MAX_TARGET_COMBINATIONS (${MAX_TARGET_COMBINATIONS}); the enumeration would be incomplete`,
+  });
   return combos;
 }
 
@@ -328,23 +346,31 @@ function buildSlots(state: GameState, spec: TargetSpec): Slot[] {
   return slots;
 }
 
-/** Recursive cartesian product across slots, emitting complete payloads. */
+/**
+ * Recursive cartesian product across slots, emitting complete payloads.
+ * Throws rather than truncating when the work budget is exhausted — see
+ * MAX_TARGET_COMBINATIONS.
+ */
+interface Budget {
+  examined: number;
+  describe: () => string;
+}
+
 function expandSlots(
   slots: Slot[],
   idx: number,
   acc: CardTargets,
   emit: (targets: CardTargets) => void,
-  budget: { generated: number },
+  budget: Budget,
 ): void {
-  if (budget.generated >= MAX_TARGET_COMBINATIONS) return;
   if (idx >= slots.length) {
-    budget.generated += 1;
+    budget.examined += 1;
+    if (budget.examined > MAX_TARGET_COMBINATIONS) internal(budget.describe());
     emit({ ...acc });
     return;
   }
   const slot = slots[idx];
   for (const choice of chooseFrom(slot)) {
-    if (budget.generated >= MAX_TARGET_COMBINATIONS) return;
     const next: CardTargets = { ...acc };
     if (slot.scalar) {
       (next as Record<string, unknown>)[slot.key] = choice[0];

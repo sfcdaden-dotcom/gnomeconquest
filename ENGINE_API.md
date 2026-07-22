@@ -142,9 +142,18 @@ values come from the card's `targetSpec` slot kinds and the card's own
 A `targetSpec` slot may set `ordered: true` when the order of the picks is
 meaningful (Instigation: the first gnome is the attacker), in which case both
 orders are enumerated; otherwise one canonical order is emitted per
-combination. Enumeration per card is capped by `MAX_TARGET_COMBINATIONS`
-(20,000) as a safety net; no shipped card approaches it on supported board
-sizes, and a test asserts that.
+combination.
+
+Enumeration work per card is bounded by `MAX_TARGET_COMBINATIONS` (20,000
+candidate payloads examined). Exceeding it **throws** `EngineError('INTERNAL')`
+rather than truncating — a truncated list would silently drop legal plays, and
+since the budget counts candidates *examined*, the drops would not even be
+proportional to a card's own breadth. The widest shipped card is a two-space
+card at C(n², 2): 1,176 on the default 7×7, 7,260 on 11×11, 14,196 on 13×13.
+The limit is first reached at 15×15, which no game configuration produces (the
+setup UI does not expose board size; the custom-preset editor is fixed at 7×7),
+so it is reachable only by calling `createGame` directly with `boardSize >= 15`.
+Tests assert complete enumeration at 7/9/11/13 and the throw at 15.
 
 ## Cards
 

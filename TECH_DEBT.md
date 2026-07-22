@@ -55,14 +55,26 @@ blocks · **P3** opportunistic.
 
 ## P3
 
-- **Target enumeration is quadratic for two-space cards.** `getLegalActions`
-  expands Pocket Shovel / Plot Twist into C(boardArea, 2) candidate payloads
-  (7,260 on an 11×11) and filters them through `validate`. Fine today — the UI
-  and AI both use `getLegalActionIntents` + `getTargetOptions` and never pay
-  for the full expansion, and `MAX_TARGET_COMBINATIONS` caps the worst case —
-  but a future card with three space slots would need per-slot pruning
-  (candidate domains narrowed before the cartesian product) rather than the
-  current generate-and-filter.
+- **Target enumeration is generate-and-filter, so it is quadratic for
+  two-space cards.** `getLegalActions` walks C(boardArea, 2) candidate payloads
+  for Pocket Shovel / Plot Twist and filters them through `validate`.
+  Measured on a mid-game state with a hand of the seven widest cards:
+  **4.6–5.7 ms** on 7×7 (1,362 actions) and **25.6–30.2 ms** on 11×11 (7,366
+  actions), versus ~0.06 ms for the same call before the contract change —
+  which returned 36 *unexecutable* actions instead. Not on any hot path today:
+  the UI and AI both use `getLegalActionIntents` (~0.06 ms, unchanged) and only
+  expand targets for the one card being aimed, and full-game AI throughput is
+  unchanged.
+
+  Past `MAX_TARGET_COMBINATIONS` the engine throws rather than truncating (see
+  the constant's doc comment for why). That makes over-large boards a loud
+  failure instead of a silent correctness hole, but it *is* a hard ceiling at
+  15×15. The real fix is per-slot candidate pruning — narrowing each slot's
+  domain before the cartesian product (e.g. Plot Twist only ever wants
+  orthogonally adjacent pairs, 2·n·(n-1) of them, not all C(n², 2)) — which
+  would make both the cost and the ceiling disappear. Worth doing before board
+  size is ever exposed in the setup UI, or before adding a card with three
+  space slots.
 - **Browser tests cover the happy path only.** `e2e/gameplay.spec.ts` drives
   setup → roll-off → harvest → move → plant → fight → response window → end
   turn on a fixed seed. Not covered: 4-player games, CPU seats, the snail

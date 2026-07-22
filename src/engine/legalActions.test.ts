@@ -190,21 +190,39 @@ describe('getLegalActions / getLegalActionIntents / getTargetOptions', () => {
     expect(wed).toHaveLength(1);
   });
 
-  it('no shipped card overruns the enumeration budget on a large board', () => {
-    // 11×11 is the largest board the setup UI can produce; the widest card
-    // (two spaces) is C(121,2) = 7,260 combinations.
-    let s = toActionPhase(3, { boardSize: 11 });
+  it.each([7, 9, 11, 13])('enumerates completely on a %i×%i board', (boardSize) => {
+    let s = toActionPhase(3, { boardSize });
     const me = activeSeat(s);
-    s = withGnome(s, me, { x: 5, y: 5 }).state;
+    s = withGnome(s, me, { x: 2, y: 2 }).state;
     s = withHand(s, me, ...TARGETED);
     s = mutate(s, (d) => d.discard.push('four-leaf-clover'));
 
     for (const cardId of TARGETED) {
-      const opts = getTargetOptions(s, { type: 'playCard', player: me, cardId });
-      expect(opts.length, `${cardId} enumeration should not be truncated`).toBeLessThan(
-        MAX_TARGET_COMBINATIONS,
-      );
+      expect(() =>
+        getTargetOptions(s, { type: 'playCard', player: me, cardId }),
+        `${cardId} should enumerate completely on ${boardSize}×${boardSize}`).not.toThrow();
     }
+
+    // Plot Twist is the sharpest completeness check: it accepts exactly the
+    // orthogonally adjacent unordered pairs, 2·n·(n-1) of them, so any
+    // silent truncation shows up immediately as a short count.
+    const twists = getTargetOptions(s, { type: 'playCard', player: me, cardId: 'plot-twist' });
+    expect(twists).toHaveLength(2 * boardSize * (boardSize - 1));
+  });
+
+  it('throws instead of silently truncating when the work budget is exhausted', () => {
+    // 15×15 costs C(225,2) = 25,200 candidate pairs for a two-space card,
+    // past MAX_TARGET_COMBINATIONS. No game configuration produces a board
+    // this large (see the constant's doc comment), but if one ever did, an
+    // incomplete enumeration must not pass silently as a complete one.
+    let s = toActionPhase(3, { boardSize: 15 });
+    const me = activeSeat(s);
+    s = withHand(s, me, 'pocket-shovel');
+
+    expect(() => getTargetOptions(s, { type: 'playCard', player: me, cardId: 'pocket-shovel' })).toThrow(
+      new RegExp(`MAX_TARGET_COMBINATIONS \\(${MAX_TARGET_COMBINATIONS}\\)`),
+    );
+    expect(() => getLegalActions(s, me)).toThrow(/incomplete/);
   });
 });
 
