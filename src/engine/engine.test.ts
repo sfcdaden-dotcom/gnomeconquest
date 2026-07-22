@@ -27,6 +27,7 @@ import {
   newGame,
   toActionPhase,
   totalGnomes,
+  withGarden,
   withGnome,
 } from './testkit';
 
@@ -477,6 +478,40 @@ describe('AI policies', () => {
     });
     expect(chooseAiAction(s)).toEqual({ type: 'declineEffect', player: me });
   });
+
+  it('plants Maize near home once Dandelion/Mushroom are unavailable (garden variety)', () => {
+    let s = toActionPhase(1);
+    const me = activePlayer(s);
+    const home = s.players[me].homePos;
+    const pos = { x: home.x + 1, y: home.y };
+    const g = withGnome(s, me, pos);
+    s = mutate(g.state, (d) => {
+      d.supply.dandelion = 0;
+      d.supply.mushroom = 0;
+      d.players[me].wishes = 5;
+      d.units[g.unitId].movedOnTurn = d.turn!.number; // no move competes with the plant
+    });
+    expect(chooseAiAction(s)).toEqual({ type: 'plant', player: me, pos, gardenType: 'maize' });
+  });
+
+  it('plants a Tunnel only once one already exists on the board (garden variety)', () => {
+    let s = toActionPhase(1);
+    const me = activePlayer(s);
+    const home = s.players[me].homePos;
+    const pos = { x: home.x + 1, y: home.y };
+    const g = withGnome(s, me, pos);
+    s = mutate(g.state, (d) => {
+      const blank = { plantedOnTurn: 0, stunnedForPlayerTurn: null, doubledForPlayerTurn: null };
+      d.gardens['0,0'] = { type: 'tunnel', ...blank }; // an existing tunnel elsewhere to link to
+      d.supply.dandelion = 0;
+      d.supply.mushroom = 0;
+      d.supply.maize = 0;
+      d.supply.flytrap = 0;
+      d.players[me].wishes = 5;
+      d.units[g.unitId].movedOnTurn = d.turn!.number;
+    });
+    expect(chooseAiAction(s)).toEqual({ type: 'plant', player: me, pos, gardenType: 'tunnel' });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -516,6 +551,75 @@ describe('AI card play', () => {
       expect(action.cardId).toBe('rocket-propelled-gnome');
       expect(action.targets?.units).toEqual([invader.unitId]);
     }
+  });
+
+  it('Hard: marries two of the same opponent\'s gnomes with Gnomio & Juliet', () => {
+    let s = toActionPhase(5);
+    const me = activePlayer(s);
+    const foe = (me + 1) % 2;
+    s = mutate(s, (d) => {
+      for (const id of Object.keys(d.units)) if (d.units[id].owner === me) delete d.units[id];
+    });
+    const g1 = withGnome(s, foe, { x: 1, y: 1 });
+    const g2 = withGnome(g1.state, foe, { x: 5, y: 5 });
+    s = mutate(g2.state, (d) => {
+      d.players[me].hand.push('gnomio-and-juliet');
+      d.players[me].difficulty = 'hard';
+      d.players[me].wishes = 0;
+    });
+    expect(chooseAiAction(s)).toEqual({
+      type: 'playCard',
+      player: me,
+      cardId: 'gnomio-and-juliet',
+      targets: { units: [g1.unitId, g2.unitId] },
+    });
+  });
+
+  it('Hard: traps an enemy gnome sitting on a Maize Garden with Lost In The Maize', () => {
+    let s = toActionPhase(5);
+    const me = activePlayer(s);
+    const foe = (me + 1) % 2;
+    s = mutate(s, (d) => {
+      for (const id of Object.keys(d.units)) if (d.units[id].owner === me) delete d.units[id];
+    });
+    const maizePos = { x: 1, y: 1 };
+    s = withGarden(s, maizePos, 'maize');
+    const invader = withGnome(s, foe, maizePos);
+    s = mutate(invader.state, (d) => {
+      d.players[me].hand.push('lost-in-the-maize');
+      d.players[me].difficulty = 'hard';
+      d.players[me].wishes = 0;
+    });
+    expect(chooseAiAction(s)).toEqual({ type: 'playCard', player: me, cardId: 'lost-in-the-maize' });
+  });
+
+  it('Hard: walls the non-Home garden nearest home that an enemy is approaching', () => {
+    let s = toActionPhase(5);
+    const me = activePlayer(s);
+    const foe = (me + 1) % 2;
+    const home = s.players[me].homePos;
+    const n = s.config.boardSize;
+    const c = (n - 1) / 2;
+    const stepX = home.x < c ? 1 : home.x > c ? -1 : 0;
+    const stepY = home.y < c ? 1 : home.y > c ? -1 : 0;
+    const gardenPos = { x: home.x + 2 * stepX, y: home.y + 2 * stepY };
+    const enemyPos = { x: gardenPos.x + stepX, y: gardenPos.y + stepY };
+    s = mutate(s, (d) => {
+      for (const id of Object.keys(d.units)) if (d.units[id].owner === me) delete d.units[id];
+    });
+    s = withGarden(s, gardenPos, 'dandelion');
+    const invader = withGnome(s, foe, enemyPos);
+    s = mutate(invader.state, (d) => {
+      d.players[me].hand.push('great-wall-of-whimsy');
+      d.players[me].difficulty = 'hard';
+      d.players[me].wishes = 0;
+    });
+    expect(chooseAiAction(s)).toEqual({
+      type: 'playCard',
+      player: me,
+      cardId: 'great-wall-of-whimsy',
+      targets: { spaces: [gardenPos] },
+    });
   });
 
   it('clones one of our own gnomes with Seeing Double', () => {
@@ -624,6 +728,25 @@ describe('AI respond policies', () => {
     expect(s.pendingDecision).toMatchObject({ kind: 'fightRespond', player: me });
     expect(chooseAiAction(s)).toEqual({ type: 'respondPlayCard', player: me, cardId: 'four-leaf-clover' });
   });
+
+  it('easy difficulty passes instead of shielding with Gnomebody Dies', () => {
+    let s = toActionPhase(5);
+    const me = activePlayer(s);
+    const g = withGnome(s, me, { x: 2, y: 2 });
+    s = mutate(g.state, (d) => {
+      d.gardens['3,2'] = {
+        type: 'flytrap',
+        plantedOnTurn: 0,
+        stunnedForPlayerTurn: null,
+        doubledForPlayerTurn: null,
+      };
+      d.players[me].hand.push('gnomebody-dies');
+      d.players[me].difficulty = 'easy';
+    });
+    s = applyAction(s, { type: 'move', player: me, unitId: g.unitId, to: { x: 3, y: 2 } });
+    expect(s.pendingDecision).toMatchObject({ kind: 'fightRespond', player: me });
+    expect(chooseAiAction(s)).toEqual({ type: 'respondPass', player: me });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -657,5 +780,32 @@ describe('AI vs AI smoke', () => {
         }
       });
     }
+  }
+
+  // Hard's fight-commitment is a genuine win-probability calculation rather
+  // than Normal's flat desperation ramp (see scoreDestination) — worth its
+  // own termination check so a Hard-vs-Hard game can't stall forever.
+  for (const seed of [1, 2, 3]) {
+    it(`finishes a full game (2p hard, seed ${seed})`, () => {
+      let s = createGame(
+        {
+          players: [
+            { name: 'P0', controller: 'cpu', difficulty: 'hard' },
+            { name: 'P1', controller: 'cpu', difficulty: 'hard' },
+          ],
+        },
+        seed,
+      );
+      let actions = 0;
+      const cap = 5000;
+      while (!isGameOver(s) && actions < cap) {
+        s = applyAction(s, chooseAiAction(s));
+        actions += 1;
+        if (actions % 100 === 0) checkInvariants(s);
+      }
+      expect(isGameOver(s)).toBe(true);
+      checkInvariants(s);
+      expect(s.events.at(-1)?.type).toBe('gameFinished');
+    });
   }
 });

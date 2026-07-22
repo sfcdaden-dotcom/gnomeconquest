@@ -145,6 +145,7 @@ function resolveConfig(options: CreateGameOptions): GameConfig {
     players: options.players.map((p, i) => ({
       name: p.name ?? `Player ${i + 1}`,
       controller: p.controller,
+      difficulty: p.difficulty ?? 'normal',
     })),
   };
   if (cfg.startingWishes < 0 || cfg.wishLimit < 1 || cfg.gnomeBoardLimit < 1) badConfig('Limits must be positive');
@@ -170,6 +171,7 @@ export function createGame(options: CreateGameOptions, seed: number): GameState 
     id: i as PlayerId,
     name: p.name,
     controller: p.controller,
+    difficulty: p.difficulty,
     status: 'playing',
     wishes: config.startingWishes,
     hand: [],

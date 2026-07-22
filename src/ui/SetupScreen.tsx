@@ -5,7 +5,7 @@
 
 import { useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import type { CreateGameOptions, GardenPreset, GardenPresetDef, PlayerController } from '../engine';
+import type { AiDifficulty, CreateGameOptions, GardenPreset, GardenPresetDef, PlayerController } from '../engine';
 import { GARDEN_PRESETS, DEFAULT_GARDEN_PRESET_ID } from '../engine';
 import { playerColor, randomSeed, PLAYER_COLOR_NAMES } from './meta';
 import { PresetEditor } from './PresetEditor';
@@ -19,9 +19,12 @@ export interface SetupResult {
 interface SeatDraft {
   name: string;
   controller: PlayerController;
+  difficulty: AiDifficulty;
 }
 
 const DEFAULT_NAMES = ['Alice', 'Bob', 'Carol', 'Dave'];
+const DIFFICULTIES: readonly AiDifficulty[] = ['easy', 'normal', 'hard'];
+const DIFFICULTY_LABELS: Record<AiDifficulty, string> = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
 
 function isCustomPresetId(id: string): boolean {
   return id.startsWith('custom:');
@@ -30,10 +33,10 @@ function isCustomPresetId(id: string): boolean {
 export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) {
   const [count, setCount] = useState<2 | 4>(2);
   const [seats, setSeats] = useState<SeatDraft[]>([
-    { name: DEFAULT_NAMES[0], controller: 'human' },
-    { name: DEFAULT_NAMES[1], controller: 'cpu' },
-    { name: DEFAULT_NAMES[2], controller: 'cpu' },
-    { name: DEFAULT_NAMES[3], controller: 'cpu' },
+    { name: DEFAULT_NAMES[0], controller: 'human', difficulty: 'normal' },
+    { name: DEFAULT_NAMES[1], controller: 'cpu', difficulty: 'normal' },
+    { name: DEFAULT_NAMES[2], controller: 'cpu', difficulty: 'normal' },
+    { name: DEFAULT_NAMES[3], controller: 'cpu', difficulty: 'normal' },
   ]);
   const [preset, setPreset] = useState<GardenPreset>('few');
   const [customPresets, setCustomPresets] = useState<GardenPresetDef[]>([]);
@@ -107,6 +110,7 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
       players: seats.slice(0, count).map((s, i) => ({
         name: s.name.trim() || DEFAULT_NAMES[i],
         controller: s.controller,
+        ...(s.controller === 'cpu' ? { difficulty: s.difficulty } : {}),
       })),
     };
     onStart({ options, seed: Math.floor(parsed) });
@@ -167,6 +171,20 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
                   🤖 CPU
                 </button>
               </div>
+              {seat.controller === 'cpu' && (
+                <select
+                  className="preset-select small"
+                  value={seat.difficulty}
+                  aria-label={`Seat ${i + 1} CPU difficulty`}
+                  onChange={(e) => updateSeat(i, { difficulty: e.target.value as AiDifficulty })}
+                >
+                  {DIFFICULTIES.map((d) => (
+                    <option key={d} value={d}>
+                      {DIFFICULTY_LABELS[d]}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           ))}
         </div>

@@ -5,6 +5,13 @@ blocks · **P3** opportunistic.
 
 ## P1
 
+- ~~**Human players couldn't plant after moving a gnome.**~~ **FIXED
+  2026-07-22.** The engine always allowed it (`canPlantAt` never checked
+  `movedOnTurn`), but `GameScreen.tsx`'s board-click routing only let you
+  re-select a unit that still had a legal *move* — a gnome that had already
+  moved dropped out of that list, so its Plant button became permanently
+  unreachable for the rest of the turn. Fixed by also treating "has a legal
+  plant at this space" as selectable, alongside "has a legal move".
 - ~~**AI plays no cards.**~~ **DONE 2026-07-17.** `ai.ts` now draws, plays
   (via `planCardPlay` with per-card deterministic target pickers, each checked
   against the card's own `validate`), responds (`planFightRespond` /
@@ -25,25 +32,30 @@ blocks · **P3** opportunistic.
   routing assumes Nope-Gnome is the only respond-only card (`cardId ===
   'nope-gnome'` special case in `handleCardResponsePlay`). Generalize via the
   card def if the designer adds more.
-- **Rules audit — remaining open questions** (bulk audit done 2026-07-16 while
-  writing the per-card tests; the maize-roll divergence it found is fixed):
-  - Center Star wish-cap overflow: leaving the center with 6 Wishes keeps
-    them until spent (no trim). Needs a designer ruling; current behavior is
-    the lenient reading.
-  - Ritual timing: CARDS.md says "own turn (any phase)"; the engine allows
-    only the Action Phase — deliberate, since the Harvest Phase never idles
-    (documented in ENGINE_API.md), but worth confirming with the designer.
-- **AI desperation tuning.** The late-game aggression ramp (`ai.ts
-  scoreDestination`) guarantees games end but is untuned; revisit with the
-  Milestone 4 heuristics work.
+- ~~**Rules audit — remaining open questions.**~~ **RULED 2026-07-22** (bulk
+  audit done 2026-07-16 while writing the per-card tests; the maize-roll
+  divergence it found is fixed): Center Star wish-cap overflow keeps Wishes
+  above 6 until spent (no trim) — designer confirmed the lenient reading is
+  correct, no code change. Ritual timing (Action Phase only) — designer
+  confirmed correct as implemented; CARDS.md's "any phase" wording already
+  matches in practice since the Harvest Phase never idles.
+- ~~**AI desperation tuning.**~~ **DONE 2026-07-22 for Hard.** Hard's
+  fight-commitment in `scoreDestination` is now a real win-probability
+  calculation (gambler's-ruin on the stack-fight rounds — see the function's
+  comment) with a bounded late-game push, replacing the flat threshold.
+  Normal/Easy deliberately keep the original ad hoc ramp (Normal = no
+  regression from before difficulty tiers existed; Easy drops the ramp
+  entirely — see the AI difficulty doc comment at the top of `ai.ts`).
 
 ## P3
 
-- **AI holds some situational cards.** `planCardPlay` returns null for Great
-  Wall, Sundown Sabotage, Pocket Shovel, Plot Twist, Gnomio & Juliet and Lost
-  In The Maize — they need board-state reads (walling a home about to be
-  captured, denying a key harvest, offensive marriage cascades) that the first
-  heuristic pass skipped. Opportunistic; the AI plays the other 17 cards.
+- ~~**AI holds some situational cards.**~~ **DONE 2026-07-22 for Hard.**
+  `planCardPlay` now has board-state-aware heuristics for all 6 (wall an
+  approach, sabotage an occupied economy garden, free tunnels near our own
+  gnomes, Plot-Twist a lone home defender out for a free capture, marry two
+  of the same opponent's gnomes for a future bonus kill, trap an enemy on
+  Maize). Easy/Normal still hold them deliberately — see `isHard` gate in
+  `ai.ts`.
 - **`scoreDestination` distorts when a friendly gnome shares a square with an
   enemy.** Such co-location can't arise in real play (entry always triggers a
   fight), but the BFS distance field marks the shared square unreachable, so

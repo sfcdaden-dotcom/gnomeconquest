@@ -24,8 +24,10 @@
  *        (Rocket Propelled Gnome / Mushroom Cloud on our stack); failing a
  *        Nope, raise a Gnomebody Dies shield instead. Otherwise pass.
  *  - Action phase: plant economy gardens early (mushroom with deep reserves,
- *    dandelion otherwise) and a flytrap near home; march gnomes toward the
- *    nearest enemy home / the Center Star; attack when favorable; play Whimsy
+ *    dandelion otherwise), a maize or flytrap near home to guard the approach,
+ *    and a tunnel once one already exists elsewhere on the board (a lone
+ *    tunnel has nowhere to link to); march gnomes toward the nearest enemy
+ *    home / the Center Star; attack when favorable; play Whimsy
  *    cards through `planCardPlay` (economy, removal, reinforcement and
  *    finisher moves — each with a deterministic target picker validated
  *    against the card's own `validate`); draw when wish-rich with hand room;
@@ -36,9 +38,18 @@
  * Roll-influencing / shield cards (Snake Eyes, 4 Leaf Clover, Gnomebody Dies)
  * are never spent proactively in the Action Phase — they are held for the
  * respond windows above, where they actually swing an outcome.
+ *
+ * Difficulty (`state.players[actor].difficulty`, per seat, default 'normal'):
+ *  - 'easy'   — never plays a response-window card (fight or card), and its
+ *    fight-commitment ignores the late-game desperation ramp while barely
+ *    weighing being outnumbered, so it both stalls forever and walks into
+ *    bad fights along the way. A deliberately weaker, exploitable opponent.
+ *  - 'normal' — the heuristics described above; this is today's opponent.
+ *  - 'hard'   — normal's heuristics, sharpened (see scoreDestination and
+ *    planCardPlay for the hard-only branches).
  */
 
-import type { Action, CardId, CardTargets, GameState, PendingDecision, PlayerId, Pos, Unit } from './types';
+import type { Action, CardId, CardTargets, GameState, PendingDecision, PlantableGardenType, PlayerId, Pos, Unit } from './types';
 import { EngineError } from './types';
 import { getLegalActions, getPlayerToAct } from './engine';
 import { getCardDef } from './cards';
@@ -232,13 +243,34 @@ function scoreDestination(state: GameState, player: PlayerId, from: Pos, to: Pos
     const destGarden = gardenAt(state, to);
     const attackingHome =
       !!destGarden && destGarden.type === 'home' && destGarden.owner !== undefined && destGarden.owner !== player;
-    // 1v1 fights are coin flips: only worth it when storming a home or when
-    // we are not outnumbered on arrival. Late-game desperation ramps up so
-    // turtled stalemates still end (fights bleed reinforcements, and
-    // reinforcement exhaustion eliminates): the longer the game runs, the
-    // less a defended home scares us. Stateless and deterministic.
-    const desperation = Math.min(6, (state.turn?.number ?? 0) / 25);
-    score += (attackingHome ? 15 + desperation * 3 : 4) - (8 - desperation) * enemies.length;
+    const difficulty = state.players[player].difficulty;
+    if (difficulty === 'easy') {
+      // Easy: no late-game push, and barely weighs being outnumbered —
+      // walks into bad fights a Normal/Hard opponent would decline.
+      score += (attackingHome ? 15 : 4) - 3 * enemies.length;
+    } else if (difficulty === 'hard') {
+      // Hard: an actual win-probability calculation instead of a flat
+      // threshold. Stack fights are repeated fair 1v1 rounds until one side
+      // is wiped (RULES.md "Fights") — a classic gambler's-ruin, so with 1
+      // attacker vs `enemies.length` defenders, P(attacker wins) = 1 / (1 +
+      // enemies.length). `effectiveAttackers` folds in a bounded late-game
+      // push (replaces Normal's flat desperation ramp with the same shape,
+      // applied inside the probability instead of on top of it).
+      const desperation = Math.min(6, (state.turn?.number ?? 0) / 25);
+      const effectiveAttackers = 1 + desperation * 0.15;
+      const winProb = effectiveAttackers / (effectiveAttackers + enemies.length);
+      const winPayoff = attackingHome ? 20 : 6;
+      const losePenalty = 10;
+      score += winProb * winPayoff - (1 - winProb) * losePenalty;
+    } else {
+      // 1v1 fights are coin flips: only worth it when storming a home or when
+      // we are not outnumbered on arrival. Late-game desperation ramps up so
+      // turtled stalemates still end (fights bleed reinforcements, and
+      // reinforcement exhaustion eliminates): the longer the game runs, the
+      // less a defended home scares us. Stateless and deterministic.
+      const desperation = Math.min(6, (state.turn?.number ?? 0) / 25);
+      score += (attackingHome ? 15 + desperation * 3 : 4) - (8 - desperation) * enemies.length;
+    }
   }
   return score;
 }
@@ -270,14 +302,32 @@ function scoreActionPhase(state: GameState, player: PlayerId, action: Action): n
       if (action.gardenType === 'mushroom' && own < 2 && reserveGnomes(state, player) >= 6) return 9;
       if (action.gardenType === 'dandelion' && own < 3) return 8;
       if (
+        action.gardenType === 'maize' &&
+        manhattan(action.pos, home) <= 2 &&
+        !samePos(action.pos, home) &&
+        !hasOwnGardenTypeNearHome(state, player, 'maize')
+      ) {
+        // Taxes any unit exiting it, guard is symmetric — but placed near our
+        // own home it slows an enemy assault more than it slows our defense.
+        return 7;
+      }
+      if (
         action.gardenType === 'flytrap' &&
         manhattan(action.pos, home) <= 2 &&
         !samePos(action.pos, home) &&
-        !hasOwnFlytrapNearHome(state, player)
+        !hasOwnGardenTypeNearHome(state, player, 'flytrap')
       ) {
         return 6;
       }
-      return -1; // other plants: skip
+      if (action.gardenType === 'tunnel' && anyTunnelOnBoard(state) && !hasOwnGardenTypeNearHome(state, player, 'tunnel')) {
+        // A lone tunnel has nothing to link to; only worth planting once the
+        // network already has at least one other node.
+        return 5;
+      }
+      // Slippery: mandatory forced-slide on harvest relocates our own
+      // occupant every cycle — a liability for whoever controls it, so the
+      // AI never plants one on purpose.
+      return -1;
     }
     case 'drawCard':
       // Draw only when wish-rich with hand room: cheap enough not to starve
@@ -313,14 +363,18 @@ function ownedEconomyGardens(state: GameState, player: PlayerId): number {
   return count;
 }
 
-function hasOwnFlytrapNearHome(state: GameState, player: PlayerId): boolean {
+function hasOwnGardenTypeNearHome(state: GameState, player: PlayerId, gardenType: PlantableGardenType): boolean {
   const home = state.players[player].homePos;
   for (const [key, g] of Object.entries(state.gardens)) {
-    if (g.type !== 'flytrap') continue;
+    if (g.type !== gardenType) continue;
     const [x, y] = key.split(',').map(Number);
     if (manhattan({ x, y }, home) <= 2) return true;
   }
   return false;
+}
+
+function anyTunnelOnBoard(state: GameState): boolean {
+  return Object.values(state.gardens).some((g) => g.type === 'tunnel');
 }
 
 // ---------------------------------------------------------------------------
@@ -483,12 +537,137 @@ function planCardPlay(
     case 'another-gnomes-treasure':
       return planTreasure(state, player);
 
+    // Situational cards: need a board-state read to be worth playing at all,
+    // so only Hard bothers (Easy/Normal hold them — see cardKeepValue).
+    case 'great-wall-of-whimsy':
+      return isHard(state, player) ? planGreatWall(state, player) : null;
+    case 'sundown-sabotage':
+      return isHard(state, player) ? planSundownSabotage(state, player) : null;
+    case 'pocket-shovel':
+      return isHard(state, player) ? planPocketShovel(state, player) : null;
+    case 'plot-twist':
+      return isHard(state, player) ? planPlotTwist(state, player) : null;
+    case 'gnomio-and-juliet':
+      return isHard(state, player) ? planGnomioAndJuliet(state, player) : null;
+    case 'lost-in-the-maize':
+      return isHard(state, player) ? planLostInTheMaize(state, player) : null;
+
     default:
-      // Roll/shield cards (held for respond windows) and cards without an AI
-      // policy yet (great-wall, sundown-sabotage, pocket-shovel, plot-twist,
-      // gnomio-and-juliet, lost-in-the-maize) are not played proactively.
+      // Roll/shield cards are held for respond windows regardless of difficulty.
       return null;
   }
+}
+
+function isHard(state: GameState, player: PlayerId): boolean {
+  return state.players[player].difficulty === 'hard';
+}
+
+/** Wall the non-Home garden nearest our home that an enemy is currently approaching. */
+function planGreatWall(state: GameState, player: PlayerId): { action: Action; score: number } | null {
+  const home = ownHomePos(state, player);
+  if (!home) return null;
+  let best: Pos | null = null;
+  let bestDist = Infinity;
+  for (const [key, g] of Object.entries(state.gardens)) {
+    if (g.type === 'home') continue;
+    const [x, y] = key.split(',').map(Number);
+    const pos = { x, y };
+    const distHome = manhattan(pos, home);
+    if (distHome > 4) continue; // only worth guarding our own approach
+    const threatened = Object.values(state.units).some(
+      (u) => u.owner !== player && u.kind === 'gnome' && manhattan(u.pos, pos) <= 2,
+    );
+    if (!threatened) continue;
+    if (distHome < bestDist) {
+      bestDist = distHome;
+      best = pos;
+    }
+  }
+  if (!best) return null;
+  const a = tryPlayCard(state, player, 'great-wall-of-whimsy', { spaces: [best] });
+  return a ? { action: a, score: 7 } : null;
+}
+
+/** Deny an enemy-occupied economy garden its next harvest. */
+function planSundownSabotage(state: GameState, player: PlayerId): { action: Action; score: number } | null {
+  for (const [key, g] of Object.entries(state.gardens)) {
+    if (g.type !== 'dandelion' && g.type !== 'mushroom') continue;
+    const [x, y] = key.split(',').map(Number);
+    const pos = { x, y };
+    if (enemyUnitsAt(state, pos, player).length === 0) continue;
+    const a = tryPlayCard(state, player, 'sundown-sabotage', { spaces: [pos] });
+    if (a) return { action: a, score: 4 };
+  }
+  return null;
+}
+
+/** Plant free Tunnel(s) adjacent to our own gnomes (immediate access, no wish cost). */
+function planPocketShovel(state: GameState, player: PlayerId): { action: Action; score: number } | null {
+  const required = Math.min(2, state.supply.tunnel);
+  if (required <= 0) return null;
+  const n = state.config.boardSize;
+  const isEmpty = (pos: Pos) =>
+    pos.x >= 0 && pos.y >= 0 && pos.x < n && pos.y < n && !gardenAt(state, pos) && unitsAt(state, pos).length === 0;
+  const seen = new Set<string>();
+  const spaces: Pos[] = [];
+  outer: for (const u of ownGnomes(state, player)) {
+    for (const d of ORTHOGONALS) {
+      const pos = { x: u.pos.x + d.x, y: u.pos.y + d.y };
+      const key = `${pos.x},${pos.y}`;
+      if (seen.has(key) || !isEmpty(pos)) continue;
+      seen.add(key);
+      spaces.push(pos);
+      if (spaces.length === required) break outer;
+    }
+  }
+  if (spaces.length < required) return null;
+  const a = tryPlayCard(state, player, 'pocket-shovel', { spaces });
+  return a ? { action: a, score: 5 } : null;
+}
+
+/**
+ * Swap one of our gnomes adjacent to an enemy's home into that home when it
+ * has exactly one defender — the swap relocates the defender away with no
+ * Entry trigger, so it bypasses the fight entirely and captures for free.
+ */
+function planPlotTwist(state: GameState, player: PlayerId): { action: Action; score: number } | null {
+  for (const p of state.players) {
+    if (p.id === player || p.status !== 'playing') continue;
+    const homeGarden = gardenAt(state, p.homePos);
+    if (!homeGarden || homeGarden.type !== 'home' || homeGarden.owner !== p.id) continue;
+    const defenders = playerUnitsAt(state, p.homePos, p.id).filter((u) => u.kind === 'gnome');
+    if (defenders.length !== 1) continue; // only a lone defender is worth the swap
+    for (const d of ORTHOGONALS) {
+      const n = { x: p.homePos.x + d.x, y: p.homePos.y + d.y };
+      const ours = playerUnitsAt(state, n, player).filter((u) => u.kind === 'gnome');
+      if (ours.length === 0) continue;
+      const a = tryPlayCard(state, player, 'plot-twist', { spaces: [n, p.homePos] });
+      if (a) return { action: a, score: 10 };
+    }
+  }
+  return null;
+}
+
+/** Marry two of the SAME opponent's gnomes — pure upside: no cost to us, and any future kill of one takes both. */
+function planGnomioAndJuliet(state: GameState, player: PlayerId): { action: Action; score: number } | null {
+  for (const p of state.players) {
+    if (p.id === player || p.status !== 'playing') continue;
+    const gnomes = Object.values(state.units).filter((u) => u.owner === p.id && u.kind === 'gnome');
+    if (gnomes.length < 2) continue;
+    const a = tryPlayCard(state, player, 'gnomio-and-juliet', { units: [gnomes[0].id, gnomes[1].id] });
+    if (a) return { action: a, score: 3 };
+  }
+  return null;
+}
+
+/** Trap an enemy gnome that's currently sitting on a Maize Garden. */
+function planLostInTheMaize(state: GameState, player: PlayerId): { action: Action; score: number } | null {
+  const trapped = Object.values(state.units).some(
+    (u) => u.owner !== player && u.kind === 'gnome' && gardenAt(state, u.pos)?.type === 'maize',
+  );
+  if (!trapped) return null;
+  const a = tryPlayCard(state, player, 'lost-in-the-maize', undefined);
+  return a ? { action: a, score: 4 } : null;
 }
 
 /** How valuable it is to Rocket-destroy this enemy gnome right now. */
@@ -744,6 +923,7 @@ function planFightRespond(
   d: Extract<PendingDecision, { kind: 'fightRespond' }>,
 ): Action {
   const pass: Action = { type: 'respondPass', player: actor };
+  if (state.players[actor].difficulty === 'easy') return pass; // never plays response cards
   const f = state.fight;
   if (!f) return pass;
   const playable = d.playableCards;
@@ -793,6 +973,7 @@ function planCardResponse(
   d: Extract<PendingDecision, { kind: 'cardResponse' }>,
 ): Action {
   const pass: Action = { type: 'respondPass', player: actor };
+  if (state.players[actor].difficulty === 'easy') return pass; // never plays response cards
   const entry = state.cardStack[d.stackIndex];
   if (!entry || entry.cancelled) return pass;
   if (!cardWouldKillOurGnome(state, actor, entry.cardId, entry.targets)) return pass;

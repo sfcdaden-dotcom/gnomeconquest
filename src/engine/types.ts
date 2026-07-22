@@ -42,6 +42,8 @@ export type PlantableGardenType = Exclude<GardenType, 'home'>;
 
 export type UnitKind = 'gnome' | 'snail';
 export type PlayerController = 'human' | 'cpu';
+/** CPU strength. Meaningless for 'human' seats, but stored uniformly. Default 'normal'. */
+export type AiDifficulty = 'easy' | 'normal' | 'hard';
 
 /**
  * 'playing'  — normal participant.
@@ -60,6 +62,8 @@ export type GardenPreset = string;
 export interface PlayerSetup {
   name?: string;
   controller: PlayerController;
+  /** CPU strength; ignored for 'human'. Defaults to 'normal'. */
+  difficulty?: AiDifficulty;
 }
 
 /** Fully-resolved game configuration (stored on the state). */
@@ -98,7 +102,7 @@ export interface GameConfig {
    */
   customHomes?: Pos[];
   /** 2 or 4 seats, clockwise. */
-  players: Array<{ name: string; controller: PlayerController }>;
+  players: Array<{ name: string; controller: PlayerController; difficulty: AiDifficulty }>;
 }
 
 /** Input to createGame: players required, everything else defaulted. */
@@ -140,6 +144,7 @@ export interface PlayerState {
   id: PlayerId;
   name: string;
   controller: PlayerController;
+  difficulty: AiDifficulty;
   status: PlayerStatus;
   wishes: number;
   hand: CardId[];
