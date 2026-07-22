@@ -136,6 +136,7 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
                 key={n}
                 type="button"
                 className={`btn${count === n ? ' accent' : ''}`}
+                data-testid={`player-count-${n}`}
                 onClick={() => setCount(n)}
               >
                 {n} players
@@ -159,6 +160,7 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
                 <button
                   type="button"
                   className={`btn small${seat.controller === 'human' ? ' accent' : ''}`}
+                  data-testid={`seat-${i}-human`}
                   onClick={() => updateSeat(i, { controller: 'human' })}
                 >
                   🧑 Human
@@ -166,6 +168,7 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
                 <button
                   type="button"
                   className={`btn small${seat.controller === 'cpu' ? ' accent' : ''}`}
+                  data-testid={`seat-${i}-cpu`}
                   onClick={() => updateSeat(i, { controller: 'cpu' })}
                 >
                   🤖 CPU
@@ -264,12 +267,13 @@ export function SetupScreen({ onStart }: { onStart: (r: SetupResult) => void }) 
             value={seedText}
             onChange={(e) => setSeedText(e.target.value)}
             aria-label="Random seed (optional)"
+            data-testid="seed-input"
           />
         </div>
 
         {error && <div className="setup-error">{error}</div>}
 
-        <button type="button" className="btn accent big" onClick={start}>
+        <button type="button" className="btn accent big" data-testid="start-game" onClick={start}>
           🌱 Start the war
         </button>
       </div>

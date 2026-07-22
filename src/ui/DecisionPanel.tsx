@@ -37,7 +37,7 @@ export function DecisionPanel({ state, decision, legal, interactive, act, onResp
         <Panel title={`🎲 ${who}: roll for turn order`}>
           <div className="small muted">Highest roll goes first; ties reroll.</div>
           <div className="btn-row">
-            <button type="button" className="btn accent" onClick={() => act({ type: 'rollOff', player: decision.player })}>
+            <button type="button" className="btn accent" data-testid="roll-off" onClick={() => act({ type: 'rollOff', player: decision.player })}>
               Roll the d6
             </button>
           </div>
@@ -53,6 +53,7 @@ export function DecisionPanel({ state, decision, legal, interactive, act, onResp
                 key={take}
                 type="button"
                 className="btn accent"
+                data-testid={`home-harvest-${take}`}
                 onClick={() => act({ type: 'homeHarvest', player: decision.player, take })}
               >
                 {take === 'wish' ? '✨ Take 1 Wish' : '🧙 Spawn a Gnome'}
@@ -72,6 +73,7 @@ export function DecisionPanel({ state, decision, legal, interactive, act, onResp
                 key={s.key}
                 type="button"
                 className="btn"
+                data-testid={`choose-harvest-${s.key}`}
                 onClick={() => act({ type: 'chooseHarvest', player: decision.player, sourceKey: s.key })}
               >
                 {GARDEN_META[s.gardenType].emoji} {GARDEN_META[s.gardenType].label} at {posStr(s.pos)}
@@ -90,6 +92,7 @@ export function DecisionPanel({ state, decision, legal, interactive, act, onResp
             key={c}
             type="button"
             className={`btn${c === decision.max ? ' accent' : ''}`}
+            data-testid={`mushroom-clones-${c}`}
             onClick={() => act({ type: 'mushroomClones', player: decision.player, count: c })}
           >
             {c === 0 ? 'None' : `Clone ${c}`}
@@ -115,7 +118,7 @@ export function DecisionPanel({ state, decision, legal, interactive, act, onResp
           </div>
           <div className="btn-row">
             {decision.optional && (
-              <button type="button" className="btn" onClick={() => act({ type: 'declineEffect', player: decision.player })}>
+              <button type="button" className="btn" data-testid="decline-effect" onClick={() => act({ type: 'declineEffect', player: decision.player })}>
                 Decline
               </button>
             )}
@@ -175,7 +178,7 @@ export function DecisionPanel({ state, decision, legal, interactive, act, onResp
             Play Sudden Magic in response, or pass.
           </div>
           <div className="btn-row">
-            <button type="button" className="btn" onClick={() => act({ type: 'respondPass', player: decision.player })}>
+            <button type="button" className="btn" data-testid="respond-pass" onClick={() => act({ type: 'respondPass', player: decision.player })}>
               Pass
             </button>
             {decision.playableCards.map((cardId) => (
@@ -183,6 +186,7 @@ export function DecisionPanel({ state, decision, legal, interactive, act, onResp
                 key={cardId}
                 type="button"
                 className="btn accent"
+                data-testid={`respond-card-${cardId}`}
                 onClick={() => onRespondCard(cardId, decision.player)}
               >
                 Play {cardName(cardId)}
@@ -224,7 +228,7 @@ export function DecisionPanel({ state, decision, legal, interactive, act, onResp
             or decline.
           </div>
           <div className="btn-row">
-            <button type="button" className="btn" onClick={() => act({ type: 'declineEffect', player: decision.player })}>
+            <button type="button" className="btn" data-testid="decline-effect" onClick={() => act({ type: 'declineEffect', player: decision.player })}>
               Stay put
             </button>
           </div>
@@ -252,7 +256,7 @@ export function DecisionPanel({ state, decision, legal, interactive, act, onResp
 
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="decision-panel">
+    <div className="decision-panel" data-testid="decision-panel">
       <div className="panel-title">{title}</div>
       {children}
     </div>

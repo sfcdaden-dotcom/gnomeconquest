@@ -18,7 +18,7 @@ import type {
   TargetSpec,
   UnitId,
 } from '../engine';
-import { getCardDef, getLegalActions, posKey, samePos, unitsAt } from '../engine';
+import { getCardDef, getLegalActionIntents, getTargetOptions, posKey, samePos, unitsAt } from '../engine';
 import { Board } from './Board';
 import type { HighlightKind } from './Board';
 import { DecisionPanel } from './DecisionPanel';
@@ -78,6 +78,129 @@ function buildTargets(t: TargetSel): CardTargets {
   return targets;
 }
 
+/** The intent behind a targeting session, for getTargetOptions. */
+function targetIntent(t: TargetSel): Action {
+  return t.respond
+    ? { type: 'respondPlayCard', player: t.player, cardId: t.cardId }
+    : { type: 'playCard', player: t.player, cardId: t.cardId };
+}
+
+// --- generic target-payload matching ---------------------------------------
+// The engine enumerates every valid CardTargets payload for a card; the UI
+// narrows that list against the picks made so far. Nothing here knows any
+// card's rules — values are compared as opaque keys.
+
+const SLOTS = ['units', 'spaces', 'players', 'cards', 'gardenType'] as const;
+type SlotKey = (typeof SLOTS)[number];
+
+function slotKeys(t: Pick<TargetSel, SlotKey>): Record<SlotKey, string[]> {
+  return {
+    units: t.units,
+    spaces: t.spaces.map(posKey),
+    players: t.players.map(String),
+    cards: t.cards,
+    gardenType: t.gardenType === undefined ? [] : [t.gardenType],
+  };
+}
+
+function comboSlotKeys(c: CardTargets): Record<SlotKey, string[]> {
+  return {
+    units: c.units ?? [],
+    spaces: (c.spaces ?? []).map(posKey),
+    players: (c.players ?? []).map(String),
+    cards: c.cards ?? [],
+    gardenType: c.gardenType === undefined ? [] : [c.gardenType],
+  };
+}
+
+/**
+ * Remove `picked` from `available` (multiset difference), or null when a pick
+ * is absent — i.e. this payload is not reachable from the current picks.
+ */
+function leftover(available: string[], picked: string[]): string[] | null {
+  const rest = [...available];
+  for (const k of picked) {
+    const i = rest.indexOf(k);
+    if (i < 0) return null;
+    rest.splice(i, 1);
+  }
+  return rest;
+}
+
+/**
+ * Can this enumerated payload still be reached from the picks made so far?
+ * Picks are matched as a subset, not a prefix: for unordered slots the engine
+ * emits one canonical order, and the player may click those targets in any
+ * order.
+ */
+function comboReachable(combo: CardTargets, t: TargetSel): boolean {
+  const picks = slotKeys(t);
+  const avail = comboSlotKeys(combo);
+  return SLOTS.every((s) => leftover(avail[s], picks[s]) !== null);
+}
+
+interface TargetCandidates {
+  units: Set<string>;
+  spaces: Set<string>;
+  players: Set<number>;
+  cards: Set<string>;
+  gardenTypes: Set<PlantableGardenType>;
+}
+
+/** What the player may still click/press next, given the reachable payloads. */
+function candidatesFrom(reachable: readonly CardTargets[], t: TargetSel): TargetCandidates {
+  const out: TargetCandidates = {
+    units: new Set(),
+    spaces: new Set(),
+    players: new Set(),
+    cards: new Set(),
+    gardenTypes: new Set(),
+  };
+  const picks = slotKeys(t);
+  for (const combo of reachable) {
+    const avail = comboSlotKeys(combo);
+    for (const id of leftover(avail.units, picks.units) ?? []) out.units.add(id);
+    for (const k of leftover(avail.spaces, picks.spaces) ?? []) out.spaces.add(k);
+    for (const p of leftover(avail.players, picks.players) ?? []) out.players.add(Number(p));
+    for (const c of leftover(avail.cards, picks.cards) ?? []) out.cards.add(c);
+    for (const g of leftover(avail.gardenType, picks.gardenType) ?? []) {
+      out.gardenTypes.add(g as PlantableGardenType);
+    }
+  }
+  return out;
+}
+
+/**
+ * Is this selection still something the acting player can actually do?
+ *
+ *  - a selected unit must still exist and still have a legal move or a legal
+ *    plant on its space (the same "actionable" test the board click uses);
+ *  - an in-progress card targeting must still be an offered play, and the
+ *    picks made so far must still lead to at least one valid target payload.
+ *
+ * Everything else is dropped, so a stale or now-illegal selection can never
+ * survive a state update.
+ */
+function selectionStillValid(state: GameState, legal: readonly Action[], sel: Sel): boolean {
+  if (sel.kind === 'none') return true;
+
+  if (sel.kind === 'unit') {
+    const u = state.units[sel.unitId];
+    if (!u) return false;
+    return legal.some(
+      (a) =>
+        (a.type === 'move' && a.unitId === u.id) || (a.type === 'plant' && samePos(a.pos, u.pos)),
+    );
+  }
+
+  const intent = targetIntent(sel);
+  const stillOffered = legal.some(
+    (a) => a.type === intent.type && a.player === sel.player && 'cardId' in a && a.cardId === sel.cardId,
+  );
+  if (!stillOffered) return false;
+  return getTargetOptions(state, intent).some((c) => comboReachable(c, sel));
+}
+
 // ---------------------------------------------------------------------------
 // GameScreen
 // ---------------------------------------------------------------------------
@@ -94,10 +217,34 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
   const { state, dispatch, playerToAct, actorIsCpu, needsPass, playback } = g;
   const [sel, setSel] = useState<Sel>(NO_SEL);
 
-  // Any state change invalidates the current selection/targeting.
-  useEffect(() => setSel(NO_SEL), [state]);
+  // Card plays are enumerated without targets here; the targeting flow gets
+  // its options from getTargetOptions, so the expensive expansion is only paid
+  // while a card is actually being aimed.
+  const legal = useMemo(() => getLegalActionIntents(state), [state]);
 
-  const legal = useMemo(() => getLegalActions(state), [state]);
+  /**
+   * Keep a selection across state updates when it is still valid, drop it when
+   * it is not. Blanket-clearing on every state change used to interrupt
+   * multi-step card targeting and tunnel chains whenever an unrelated update
+   * landed (a CPU seat acting, a fight step, a toast-triggering re-render).
+   */
+  useEffect(() => {
+    setSel((cur) => (selectionStillValid(state, legal, cur) ? cur : NO_SEL));
+  }, [state, legal]);
+
+  /** Reachable target payloads for the in-progress targeting, if any. */
+  const targetCombos = useMemo(
+    () => (sel.kind === 'target' ? getTargetOptions(state, targetIntent(sel)) : []),
+    [state, sel],
+  );
+  const reachable = useMemo(
+    () => (sel.kind === 'target' ? targetCombos.filter((c) => comboReachable(c, sel)) : []),
+    [targetCombos, sel],
+  );
+  const candidates = useMemo(
+    () => (sel.kind === 'target' ? candidatesFrom(reachable, sel) : null),
+    [reachable, sel],
+  );
 
   /** True when the on-screen human may interact with board/panels. */
   const interactive =
@@ -112,7 +259,7 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
   const handPlayable = useMemo(() => {
     const set = new Set<CardId>();
     if (handSeat === null || needsPass || playback) return set;
-    for (const a of getLegalActions(state, handSeat)) {
+    for (const a of getLegalActionIntents(state, handSeat)) {
       if (a.type === 'playCard') set.add(a.cardId);
     }
     return set;
@@ -123,8 +270,13 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
   // --- dispatch helpers ------------------------------------------------------
 
   function act(action: Action) {
-    dispatch(action);
-    setSel(NO_SEL);
+    const ok = dispatch(action);
+    // A targeting session ends the moment its card is dispatched (a second
+    // copy of the same card in hand must not silently inherit the picks), and
+    // a rejected action drops the selection outright. Otherwise the selection
+    // is left to the validity check above — so a gnome you just moved stays
+    // selected and can still plant on its new space.
+    if (!ok || sel.kind === 'target') setSel(NO_SEL);
   }
 
   /** Begin playing a card: dispatch immediately if untargeted, else enter targeting. */
@@ -136,6 +288,16 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
           ? { type: 'respondPlayCard', player, cardId }
           : { type: 'playCard', player, cardId },
       );
+      return;
+    }
+    // A card can pass the cheap playability check and still have no valid
+    // target on this board (the check is deliberately coarser than `validate`).
+    // Say so instead of opening a targeting mode with nothing to click.
+    const intent: Action = respond
+      ? { type: 'respondPlayCard', player, cardId }
+      : { type: 'playCard', player, cardId };
+    if (getTargetOptions(state, intent).length === 0) {
+      g.pushToast(`${def.name}: no legal targets right now`);
       return;
     }
     setSel({
@@ -185,21 +347,19 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
   function onCellClick(pos: Pos) {
     if (!interactive || playerToAct === null) return;
 
-    // 1) Card targeting mode: fill unit slots first, then space slots.
-    if (sel.kind === 'target') {
+    // 1) Card targeting mode: units first, then spaces. Only picks that keep a
+    // valid payload reachable are accepted — the candidate sets come from the
+    // engine's enumeration, so the UI never guesses at a card's rules.
+    if (sel.kind === 'target' && candidates) {
       const t = sel;
       if (t.spec.units && t.units.length < t.spec.units.count) {
-        const cand = unitsAt(state, pos).find((u) => !t.units.includes(u.id));
+        const cand = unitsAt(state, pos).find((u) => candidates.units.has(u.id));
         if (cand) {
           addPick({ ...t, units: [...t.units, cand.id] }, t);
           return;
         }
       }
-      if (
-        t.spec.spaces &&
-        t.spaces.length < t.spec.spaces.count &&
-        !t.spaces.some((q) => samePos(q, pos))
-      ) {
+      if (t.spec.spaces && t.spaces.length < t.spec.spaces.count && candidates.spaces.has(posKey(pos))) {
         addPick({ ...t, spaces: [...t.spaces, pos] }, t);
       }
       return;
@@ -273,13 +433,17 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
     const map = new Map<string, HighlightKind>();
     if (!interactive) return map;
 
-    if (sel.kind === 'target') {
+    if (sel.kind === 'target' && candidates) {
       const t = sel;
-      // Unit slots: candidate cells (any unit; the card's validate is the judge).
+      // Only cells that keep a valid target payload reachable are offered.
       if (t.spec.units && t.units.length < t.spec.units.count) {
-        for (const u of Object.values(state.units)) {
-          if (!t.units.includes(u.id)) map.set(posKey(u.pos), 'target');
+        for (const id of candidates.units) {
+          const u = state.units[id];
+          if (u) map.set(posKey(u.pos), 'target');
         }
+      }
+      if (t.spec.spaces && t.spaces.length < t.spec.spaces.count) {
+        for (const k of candidates.spaces) map.set(k, 'target');
       }
       for (const q of t.spaces) map.set(posKey(q), 'picked');
       for (const uid of t.units) {
@@ -309,7 +473,7 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
       }
     }
     return map;
-  }, [state, sel, decision, legal, interactive]);
+  }, [state, sel, decision, legal, interactive, candidates]);
 
   const selectedKey =
     sel.kind === 'unit' && state.units[sel.unitId] ? posKey(state.units[sel.unitId].pos) : null;
@@ -328,10 +492,23 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
       : [];
 
   return (
-    <div className="game-screen">
+    /* The data-* attributes mirror already-visible game state (status, phase,
+       whose decision is open). They exist so browser tests can wait on a
+       condition without scraping prose from the banner. */
+    <div
+      className="game-screen"
+      data-testid="game-screen"
+      data-status={state.status}
+      data-phase={state.turn?.phase ?? ''}
+      data-turn={state.turn?.number ?? ''}
+      data-active-player={state.turn?.activePlayer ?? ''}
+      data-player-to-act={playerToAct ?? ''}
+      data-decision={decision?.kind ?? ''}
+      data-interactive={interactive ? 'true' : 'false'}
+    >
       <header className="topbar">
         <span className="brand">🧙 Whimsy Wars</span>
-        <span className="banner">{bannerText(state, playerToAct)}</span>
+        <span className="banner" data-testid="banner">{bannerText(state, playerToAct)}</span>
         <label className="ff-toggle" title="Skip CPU pacing and fight animations">
           <input
             type="checkbox"
@@ -363,37 +540,40 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
           {/* Stable-height slot: the bar appearing/disappearing must not
               reflow the board. Targeting replaces the action bar. */}
           <div className="board-footer">
-            {sel.kind === 'target' ? (
+            {sel.kind === 'target' && candidates ? (
               <TargetingBanner
                 state={state}
                 t={sel}
+                candidates={candidates}
                 onCancel={() => setSel(NO_SEL)}
                 onPick={addPick}
                 onConfirm={() => attemptPlay(sel, sel)}
               />
             ) : showActionBar ? (
-              <div className="action-bar">
+              <div className="action-bar" data-testid="action-bar">
                 <button
                   type="button"
                   className="btn"
                   disabled={!canDraw}
+                  data-testid="draw-card"
                   onClick={() => act({ type: 'drawCard', player: playerToAct! })}
                 >
                   🃏 Draw card (1 ✨)
                 </button>
                 {plantActions.map((a) => (
-                  <button key={a.gardenType} type="button" className="btn" onClick={() => act(a)}>
+                  <button key={a.gardenType} type="button" className="btn" data-testid={`plant-${a.gardenType}`} onClick={() => act(a)}>
                     {GARDEN_META[a.gardenType].emoji} Plant {GARDEN_META[a.gardenType].label}
                   </button>
                 ))}
                 {sel.kind === 'unit' && (
-                  <button type="button" className="btn small" onClick={() => setSel(NO_SEL)}>
+                  <button type="button" className="btn small" data-testid="deselect" onClick={() => setSel(NO_SEL)}>
                     Deselect
                   </button>
                 )}
                 <button
                   type="button"
                   className="btn warn"
+                  data-testid="end-turn"
                   onClick={() => act({ type: 'endTurn', player: playerToAct! })}
                 >
                   End turn ⏹
@@ -509,12 +689,14 @@ function CursePanel({ state }: { state: GameState }) {
 function TargetingBanner({
   state,
   t,
+  candidates,
   onCancel,
   onPick,
   onConfirm,
 }: {
   state: GameState;
   t: TargetSel;
+  candidates: TargetCandidates;
   onCancel: () => void;
   onPick: (next: TargetSel, prev: Sel) => void;
   onConfirm: () => void;
@@ -531,14 +713,16 @@ function TargetingBanner({
   const needCards = t.spec.cards ? t.spec.cards.count - t.cards.length : 0;
   const needGardenType = !!t.spec.gardenType && t.gardenType === undefined;
 
-  const eligiblePlayers = needPlayers > 0 ? state.players.filter((p) => !t.players.includes(p.id)) : [];
-  const discardChoices = needCards > 0 ? [...new Set(state.discard)].filter((c) => !t.cards.includes(c)) : [];
+  // Choices come from the engine's enumeration (already narrowed by the picks
+  // so far), so every button shown leads to a legal play.
+  const eligiblePlayers = needPlayers > 0 ? state.players.filter((p) => candidates.players.has(p.id)) : [];
+  const discardChoices = needCards > 0 ? [...new Set(state.discard)].filter((c) => candidates.cards.has(c)) : [];
   const gardenTypes = needGardenType
-    ? (Object.keys(state.supply) as PlantableGardenType[]).filter((gt) => state.supply[gt] > 0)
+    ? (Object.keys(state.supply) as PlantableGardenType[]).filter((gt) => candidates.gardenTypes.has(gt))
     : [];
 
   return (
-    <div className="targeting-banner">
+    <div className="targeting-banner" data-testid="targeting-banner">
       <span>
         🎯 <b>{cardName(t.cardId)}</b>
         {wants.length > 0 && <>: click {wants.join(', then ')}</>}
@@ -578,11 +762,11 @@ function TargetingBanner({
         </button>
       ))}
       {anyTargetPicked(t) && !targetingComplete(t) && (
-        <button type="button" className="btn small accent" onClick={onConfirm}>
+        <button type="button" className="btn small accent" data-testid="targeting-confirm" onClick={onConfirm}>
           Play with current targets
         </button>
       )}
-      <button type="button" className="btn small warn" onClick={onCancel}>
+      <button type="button" className="btn small warn" data-testid="targeting-cancel" onClick={onCancel}>
         Cancel
       </button>
     </div>
@@ -599,14 +783,14 @@ function PassOverlay({
   onConfirm: () => void;
 }) {
   return (
-    <div className="overlay opaque" role="dialog" aria-label="Pass the device">
+    <div className="overlay opaque" role="dialog" aria-label="Pass the device" data-testid="pass-overlay">
       <div className="overlay-card pass-card">
         <div className="pass-emoji">🤝</div>
         <h2>
           Pass the device to <span style={{ color: playerColor(seat) }}>{pname(state, seat)}</span>
         </h2>
         <p className="muted">Hands stay hidden until they take over.</p>
-        <button type="button" className="btn accent big" onClick={onConfirm}>
+        <button type="button" className="btn accent big" data-testid="pass-confirm" onClick={onConfirm}>
           I'm {pname(state, seat)} — continue
         </button>
       </div>
@@ -625,7 +809,7 @@ function EndOverlay({
 }) {
   const w = state.winner;
   return (
-    <div className="overlay" role="dialog" aria-label="Game over">
+    <div className="overlay" role="dialog" aria-label="Game over" data-testid="end-overlay">
       <div className="overlay-card end-card">
         <div className="pass-emoji">{w !== null ? '🏆' : '🍂'}</div>
         <h2>
