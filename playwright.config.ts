@@ -26,7 +26,7 @@ export default defineConfig({
   // Test the production bundle: closest to what players get, and it fails the
   // run if the build itself is broken.
   webServer: {
-    command: 'npm run build && npm run preview -- --port 4173 --strictPort --host localhost',
+    command: 'npm run build && npx vite preview --port 4173 --strictPort --host localhost',
     url: 'http://localhost:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
