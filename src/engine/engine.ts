@@ -31,7 +31,8 @@ import { settle } from './settle';
 
 // Re-exported so `./engine` stays the single import site for the core API.
 export { getPlayerToAct } from './turns';
-export { getLegalActions, getLegalActionIntents, getTargetOptions } from './legalActions';
+export { getLegalActions, getLegalActionIntents, enumerateCompleteCardActions } from './legalActions';
+export { getPendingDecisionOptions } from './targeting';
 
 /**
  * Events kept on the state (rolling window). Bounds the per-action clone cost

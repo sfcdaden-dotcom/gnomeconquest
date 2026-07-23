@@ -43,11 +43,18 @@ import {
 import {
   deckHasCards,
   drawOneCard,
+  getCardDef,
   handleCardResponsePass,
   handleCardResponsePlay,
   playCardFromHand,
   whyCannotPlayNow,
 } from './cards';
+import {
+  applyCancelTargeting,
+  applySelectTarget,
+  beginActionTargeting,
+  beginResponseTargeting,
+} from './targeting';
 import { doSacrificeGnome, doSnailify } from './elimination';
 import { doEndTurn, doRollOff, requireActionPhaseActor } from './turns';
 
@@ -77,9 +84,11 @@ export function dispatch(draft: GameState, action: Action): void {
         ? handleCardResponsePass(draft, action.player)
         : handleRespondPass(draft, action.player);
     case 'respondPlayCard':
-      return draft.pendingDecision?.kind === 'cardResponse'
-        ? handleCardResponsePlay(draft, action.player, action.cardId, action.targets)
-        : handleRespondPlayCard(draft, action.player, action.cardId, action.targets);
+      return doRespondPlayCard(draft, action.player, action.cardId, action.targets);
+    case 'selectTarget':
+      return applySelectTarget(draft, action.player, action.target);
+    case 'cancelTargeting':
+      return applyCancelTargeting(draft, action.player);
     case 'discardCard':
       return doDiscardCard(draft, action.player, action.cardId);
     case 'snailify':
@@ -209,5 +218,38 @@ function doPlayCard(draft: GameState, player: PlayerId, cardId: string, targets:
   // Ritual timing and target existence in one place.
   const why = whyCannotPlayNow(draft, player, cardId);
   if (why) illegal(why);
+  // A targeted card played WITHOUT targets enters phased targeting (the card
+  // stays in hand until the last target is chosen and re-validated). A play
+  // that already carries targets is committed in one shot (AI / direct callers).
+  if (needsPhasedTargeting(cardId, targets)) {
+    beginActionTargeting(draft, player, cardId);
+    return;
+  }
   playCardFromHand(draft, player, cardId, targets);
+}
+
+/**
+ * Play a card in the open Respond window (fight or card). Routes a targeted
+ * card played without targets into phased targeting; otherwise commits at once.
+ */
+function doRespondPlayCard(
+  draft: GameState,
+  player: PlayerId,
+  cardId: string,
+  targets: CardTargets | undefined,
+): void {
+  if (needsPhasedTargeting(cardId, targets)) {
+    beginResponseTargeting(draft, player, cardId);
+    return;
+  }
+  if (draft.pendingDecision?.kind === 'cardResponse') {
+    handleCardResponsePlay(draft, player, cardId, targets);
+  } else {
+    handleRespondPlayCard(draft, player, cardId, targets);
+  }
+}
+
+/** A card that requires targets but was dispatched without any. */
+function needsPhasedTargeting(cardId: string, targets: CardTargets | undefined): boolean {
+  return targets === undefined && !!getCardDef(cardId)?.needsTargets;
 }

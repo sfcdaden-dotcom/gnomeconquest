@@ -21,14 +21,14 @@ export type { GardenPresetDef } from './gardenPresets';
 // Core reducer API.
 export {
   applyAction,
-  getLegalActions,
   getLegalActionIntents,
-  getTargetOptions,
+  getPendingDecisionOptions,
+  getLegalActions,
+  enumerateCompleteCardActions,
   getPlayerToAct,
   isGameOver,
   boardGnomes,
 } from './engine';
-export { MAX_TARGET_COMBINATIONS } from './legalActions';
 export { MAX_SETTLE_STEPS } from './settle';
 
 // Read-only state queries (safe for UI use).
@@ -56,7 +56,7 @@ export {
 
 // Card framework (data-driven; the full 23-card + 5-curse list from CARDS.md).
 export { CARD_DEFINITIONS, CURSE_DEFINITIONS, getCardDef, getCurseDef, isCurseId, deckHasCards } from './cards';
-export type { WhimsyCardDef, CurseCardDef, CardTiming, TargetSpec } from './cards';
+export type { WhimsyCardDef, CurseCardDef, CardTiming, TargetStep, TargetingContext } from './cards';
 
 // Heuristic CPU player.
 export { chooseAiAction } from './ai';
