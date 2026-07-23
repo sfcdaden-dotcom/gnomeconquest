@@ -4,7 +4,7 @@ Status legend: ✅ done · 🔶 in progress · ⬜ not started
 
 | # | Milestone | Status | Notes |
 |---|-----------|--------|-------|
-| 1 | **Engine stability** | ✅ | Strict TS, zero warnings; full games run headless; settle loop covers card stack, fights, eliminations, harvests; all 12 decision kinds routable; seeded AI-vs-AI suite green (2026-07-16) |
+| 1 | **Engine stability** | ✅ | Strict TS, zero warnings; full games run headless; settle loop covers card stack, fights, eliminations, harvests; all 12 decision kinds routable; seeded AI-vs-AI suite green (2026-07-16). 2026-07-22: `engine.ts` split by responsibility (actions/turns/settle/elimination/legalActions); `getLegalActions` now returns only complete, executable actions (targets included) with `getLegalActionIntents` + `getTargetOptions` as the cheap two-stage path; response routing driven by card metadata instead of card ids; settle guard cut 100,000 → 1,000 with a full state diagnostic on overrun |
 | 2 | Complete gameplay implementation | ✅ | Rules audit done 2026-07-16 (found & fixed: maize harvest roll now uses the owner's roll, so Snake Eyes/Clover apply). Two open designer questions logged in TECH_DEBT.md |
 | 3 | Complete card system | ✅ | All 23 cards + 5 curses implemented, resolvable, and covered by per-card tests (validate/resolve/fizzle, 36 tests in cards.test.ts, 2026-07-16) |
 | 4 | AI competency | 🔶 | Card play landed 2026-07-17: the AI now draws (when wish-rich with hand room), plays economy/removal/reinforcement/finisher cards through `planCardPlay` (deterministic target pickers validated against each card's own `validate`), responds in fight windows (Gnomebody-Dies shield vs flytraps, Clover/Snake-Eyes in home-stakes/late fights), Nope-Gnomes lethal cards (Rocket/Mushroom-Cloud on our gnomes), and discards its lowest-value card. Difficulty levels landed 2026-07-22: per-seat Easy/Normal/Hard dropdown in Setup; Easy never plays response-window cards and ignores the late-game push; Hard replaces the flat fight-commitment heuristic with a genuine win-probability calculation and plays the 6 previously-held situational cards. Also 2026-07-22: the AI now plants Maize and Tunnel Gardens (previously only Dandelion/Mushroom/Flytrap). Remaining: difficulty-aware fight-*response* windows (Hard currently reuses Normal's), Hard tactics beyond fight commitment (e.g. baiting, feints) |
@@ -15,7 +15,7 @@ Status legend: ✅ done · 🔶 in progress · ⬜ not started
 | 9 | Statistics | ⬜ | Per-player aggregates from event stream |
 | 10 | Accessibility | ⬜ | Keyboard-only play, screen-reader labels (board cells already have aria-labels), color-blind palettes |
 | 11 | Multiplayer-ready architecture | ⬜ | Server-authoritative applyAction relay; state is plain data by contract |
-| 12 | Release candidate | 🔶 | Public-release prep done 2026-07-16 (v1.0.0-rc.1): build-time CSP, security headers, error boundary, host-agnostic relative base, deps audit clean, DEPLOYMENT.md. Remaining human steps: license choice, git init/push, host account + first deploy (see DEPLOYMENT.md checklist) |
+| 12 | Release candidate | 🔶 | Public-release prep done 2026-07-16 (v1.0.0-rc.1): build-time CSP, security headers, error boundary, host-agnostic relative base, deps audit clean, DEPLOYMENT.md. 2026-07-22: GitHub Actions CI (`.github/workflows/ci.yml`) runs `npm ci` → lint → test → build plus the Playwright browser suite on every push and PR. Remaining human steps: license choice, git init/push, host account + first deploy (see DEPLOYMENT.md checklist) |
 
 ## Current focus
 

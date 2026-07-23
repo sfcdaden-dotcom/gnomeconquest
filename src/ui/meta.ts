@@ -3,7 +3,7 @@
  * Pure functions over engine data — no rule logic lives here.
  */
 
-import type { Action, FightSide, GameEvent, GameState, GardenType, Pos } from '../engine';
+import type { Action, CardTarget, FightSide, GameEvent, GameState, GardenType, Pos } from '../engine';
 import { getCardDef, getCurseDef } from '../engine';
 
 // ---------------------------------------------------------------------------
@@ -217,6 +217,10 @@ export function describeAction(state: GameState, a: Action): string {
     }
     case 'snailMove':
       return `Move the snail to ${posStr(a.to)}`;
+    case 'selectTarget':
+      return describeTarget(state, a.target);
+    case 'cancelTargeting':
+      return 'Cancel targeting';
     case 'move':
       return `Move to ${posStr(a.to)}`;
     case 'plant':
@@ -239,6 +243,23 @@ export function describeAction(state: GameState, a: Action): string {
   }
 }
 
+function describeTarget(state: GameState, target: CardTarget): string {
+  switch (target.kind) {
+    case 'unit': {
+      const u = state.units[target.unitId];
+      return `Target the unit at ${u ? posStr(u.pos) : target.unitId}`;
+    }
+    case 'space':
+      return `Target ${posStr(target.pos)}`;
+    case 'player':
+      return `Target ${pname(state, target.playerId)}`;
+    case 'card':
+      return `Choose ${cardName(target.cardId)}`;
+    case 'gardenType':
+      return `Choose ${GARDEN_META[target.gardenType].label}`;
+  }
+}
+
 export function decisionLabel(kind: string): string {
   switch (kind) {
     case 'rollOff':
@@ -257,6 +278,8 @@ export function decisionLabel(kind: string): string {
       return 'fight response';
     case 'cardResponse':
       return 'card response window';
+    case 'cardTargeting':
+      return 'choosing targets';
     case 'sacrificeGnome':
       return 'sacrifice a gnome';
     case 'snailMove':

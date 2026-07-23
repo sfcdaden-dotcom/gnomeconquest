@@ -170,12 +170,30 @@ export function handleRespondPlayCard(
   cardId: CardId,
   targets: CardTargets | undefined,
 ): void {
-  const f = requireRespond(draft, player);
+  requireRespond(draft, player);
   const d = draft.pendingDecision;
   if (!d || d.kind !== 'fightRespond') internal('respond decision vanished');
   if (!d.playableCards.includes(cardId)) {
     illegal(`Card ${cardId} is not playable in this Respond window`);
   }
+  commitFightRespondPlay(draft, player, cardId, targets);
+}
+
+/**
+ * Commit a fight-response play: close the window, re-open the opponent's, and
+ * push the card onto the stack. Shared by the immediate path (above) and the
+ * completion of phased targeting (targeting.ts), so both flip the fight the
+ * same way. Reads the live fight directly — the fightRespond decision may
+ * already have been replaced by a cardTargeting one during targeting.
+ */
+export function commitFightRespondPlay(
+  draft: GameState,
+  player: PlayerId,
+  cardId: CardId,
+  targets: CardTargets | undefined,
+): void {
+  const f = draft.fight;
+  if (!f) internal('no live fight to respond to');
   draft.pendingDecision = null;
   // A played card re-opens the opponent's window.
   f.passes = 0;

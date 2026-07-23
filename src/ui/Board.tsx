@@ -77,6 +77,9 @@ export function Board({ state, highlights, selectedKey, onCellClick }: BoardProp
           type="button"
           className={classes.join(' ')}
           style={style as CSSProperties}
+          data-testid={`cell-${key}`}
+          data-highlight={hl ?? ''}
+          data-selected={selectedKey === key ? 'true' : 'false'}
           onClick={() => onCellClick(pos)}
           aria-label={`Space ${key}${garden ? `, ${GARDEN_META[garden.type].label}` : ''}`}
           title={cellTitle(state, pos)}
@@ -91,12 +94,15 @@ export function Board({ state, highlights, selectedKey, onCellClick }: BoardProp
           )}
           {isCenter && <span className="star">⭐</span>}
           {units.length > 0 && (
-            <span className="tokens">
+            <span className="tokens" data-testid={`units-${key}`} data-count={units.length}>
               {groupUnits(state, units).map((g) => (
                 <span
                   key={`${g.owner}:${g.kind}`}
                   className={`token ${g.kind}${g.allMoved ? ' moved' : ''}`}
                   style={{ '--pc': playerColor(g.owner) } as CSSProperties}
+                  data-owner={g.owner}
+                  data-kind={g.kind}
+                  data-count={g.count}
                 >
                   <span className="token-face">{g.kind === 'snail' ? '🐌' : '🧙'}</span>
                   {g.count > 1 && <span className="token-count">{g.count}</span>}

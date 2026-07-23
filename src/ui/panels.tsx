@@ -129,7 +129,7 @@ export function HandPanel({ state, seat, playable, onPlay, disabled }: HandPanel
       {p.hand.length === 0 ? (
         <div className="muted small">No cards. Draw one for 1 ✨ during your Action Phase.</div>
       ) : (
-        <div className="hand-cards">
+        <div className="hand-cards" data-testid="hand-cards">
           {p.hand.map((cardId, i) => {
             const def = getCardDef(cardId);
             return (
@@ -143,6 +143,7 @@ export function HandPanel({ state, seat, playable, onPlay, disabled }: HandPanel
                   type="button"
                   className="btn small"
                   disabled={disabled || !playable.has(cardId)}
+                  data-testid={`play-card-${cardId}`}
                   onClick={() => onPlay(cardId)}
                 >
                   Play
@@ -178,7 +179,7 @@ export function FightPanel({ state, interactive, onPass, onPlayCard }: FightPane
   const d = state.pendingDecision;
   const respond = d?.kind === 'fightRespond' ? d : null;
   return (
-    <div className="fight-panel">
+    <div className="fight-panel" data-testid="fight-panel">
       <div className="panel-title">⚔️ Fight at {posStr(f.pos)} — round {f.round}</div>
       <div className="fight-sides">
         <FightSideBadge state={state} idx={0} f={f} />
@@ -202,7 +203,7 @@ export function FightPanel({ state, interactive, onPass, onPlayCard }: FightPane
           </div>
           {interactive ? (
             <div className="btn-row">
-              <button type="button" className="btn" onClick={onPass}>
+              <button type="button" className="btn" data-testid="fight-respond-pass" onClick={onPass}>
                 Pass
               </button>
               {respond.playableCards.map((cardId) => (
@@ -210,6 +211,7 @@ export function FightPanel({ state, interactive, onPass, onPlayCard }: FightPane
                   key={cardId}
                   type="button"
                   className="btn accent"
+                  data-testid={`fight-respond-card-${cardId}`}
                   onClick={() => onPlayCard(cardId)}
                 >
                   Play {cardName(cardId)}
@@ -284,7 +286,7 @@ export function FightPlaybackOverlay({ state, playback, onSkip }: FightPlaybackP
             </div>
           ))}
         </div>
-        <button type="button" className="btn" onClick={onSkip}>
+        <button type="button" className="btn" data-testid="skip-playback" onClick={onSkip}>
           Skip ⏭
         </button>
       </div>

@@ -9,16 +9,15 @@ import { useEffect, useMemo, useState } from 'react';
 import type {
   Action,
   CardId,
-  CardTargets,
+  CardTarget,
   CreateGameOptions,
   GameState,
-  PlantableGardenType,
+  PendingDecision,
   PlayerId,
   Pos,
-  TargetSpec,
   UnitId,
 } from '../engine';
-import { getCardDef, getLegalActions, posKey, samePos, unitsAt } from '../engine';
+import { getLegalActionIntents, getPendingDecisionOptions, posKey, samePos, unitsAt } from '../engine';
 import { Board } from './Board';
 import type { HighlightKind } from './Board';
 import { DecisionPanel } from './DecisionPanel';
@@ -27,55 +26,46 @@ import { GARDEN_META, cardName, decisionLabel, playerColor, pname } from './meta
 import { useGame } from './useGame';
 
 // ---------------------------------------------------------------------------
-// Selection / card-targeting state
+// Unit selection state
+//
+// Card targeting is NOT tracked here: it lives entirely in the engine as a
+// `cardTargeting` pending decision, and the UI renders the current step's
+// options from `getPendingDecisionOptions`. The only local selection is which
+// of the acting player's own units is highlighted for moving / planting.
 // ---------------------------------------------------------------------------
 
-interface TargetSel {
-  kind: 'target';
-  cardId: CardId;
-  /** true ⇒ dispatch respondPlayCard (fight / card response window). */
-  respond: boolean;
-  player: PlayerId;
-  spec: TargetSpec;
-  units: UnitId[];
-  spaces: Pos[];
-  players: PlayerId[];
-  cards: CardId[];
-  gardenType?: PlantableGardenType;
-}
-
-type Sel = { kind: 'none' } | { kind: 'unit'; unitId: UnitId } | TargetSel;
+type Sel = { kind: 'none' } | { kind: 'unit'; unitId: UnitId };
 
 const NO_SEL: Sel = { kind: 'none' };
 
-function targetingComplete(t: TargetSel): boolean {
-  return (
-    (!t.spec.units || t.units.length >= t.spec.units.count) &&
-    (!t.spec.spaces || t.spaces.length >= t.spec.spaces.count) &&
-    (!t.spec.players || t.players.length >= t.spec.players.count) &&
-    (!t.spec.cards || t.cards.length >= t.spec.cards.count) &&
-    (!t.spec.gardenType || t.gardenType !== undefined)
+/**
+ * Is the selected unit still actionable? It must still exist and still have a
+ * legal move or a legal plant on its space (the same test the board click
+ * uses), so a stale selection can never survive a state update.
+ */
+function selectionStillValid(state: GameState, legal: readonly Action[], sel: Sel): boolean {
+  if (sel.kind === 'none') return true;
+  const u = state.units[sel.unitId];
+  if (!u) return false;
+  return legal.some(
+    (a) => (a.type === 'move' && a.unitId === u.id) || (a.type === 'plant' && samePos(a.pos, u.pos)),
   );
 }
 
-function anyTargetPicked(t: TargetSel): boolean {
-  return (
-    t.units.length > 0 ||
-    t.spaces.length > 0 ||
-    t.players.length > 0 ||
-    t.cards.length > 0 ||
-    t.gardenType !== undefined
-  );
-}
-
-function buildTargets(t: TargetSel): CardTargets {
-  const targets: CardTargets = {};
-  if (t.units.length > 0) targets.units = t.units;
-  if (t.spaces.length > 0) targets.spaces = t.spaces;
-  if (t.players.length > 0) targets.players = t.players;
-  if (t.cards.length > 0) targets.cards = t.cards;
-  if (t.gardenType !== undefined) targets.gardenType = t.gardenType;
-  return targets;
+/**
+ * The card-agnostic board option at `pos`, if any: a space option matching the
+ * cell, or a unit option whose unit stands on it. The engine's options carry
+ * the card's rules; the UI just matches by kind, never by card id.
+ */
+function boardOptionAt(options: readonly CardTarget[], state: GameState, pos: Pos): CardTarget | null {
+  for (const o of options) {
+    if (o.kind === 'space' && samePos(o.pos, pos)) return o;
+    if (o.kind === 'unit') {
+      const u = state.units[o.unitId];
+      if (u && samePos(u.pos, pos)) return o;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,10 +84,30 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
   const { state, dispatch, playerToAct, actorIsCpu, needsPass, playback } = g;
   const [sel, setSel] = useState<Sel>(NO_SEL);
 
-  // Any state change invalidates the current selection/targeting.
-  useEffect(() => setSel(NO_SEL), [state]);
+  // Card plays are enumerated WITHOUT targets — dispatching a targeted play
+  // opens a `cardTargeting` decision, and the engine then hands back one step's
+  // options at a time, so no combinatorial expansion is ever paid in the UI.
+  const legal = useMemo(() => getLegalActionIntents(state), [state]);
 
-  const legal = useMemo(() => getLegalActions(state), [state]);
+  /**
+   * Keep a unit selection across state updates when it is still valid, drop it
+   * when it is not. Blanket-clearing on every state change used to interrupt
+   * tunnel chains whenever an unrelated update landed (a CPU seat acting, a
+   * fight step, a toast-triggering re-render).
+   */
+  useEffect(() => {
+    setSel((cur) => (selectionStillValid(state, legal, cur) ? cur : NO_SEL));
+  }, [state, legal]);
+
+  /**
+   * Options for the current step of an in-progress card targeting (empty
+   * otherwise). Recomputed from live state by the engine — the UI holds no
+   * targeting state of its own.
+   */
+  const targetingOptions = useMemo(
+    () => (state.pendingDecision?.kind === 'cardTargeting' ? getPendingDecisionOptions(state) : []),
+    [state],
+  );
 
   /** True when the on-screen human may interact with board/panels. */
   const interactive =
@@ -112,7 +122,7 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
   const handPlayable = useMemo(() => {
     const set = new Set<CardId>();
     if (handSeat === null || needsPass || playback) return set;
-    for (const a of getLegalActions(state, handSeat)) {
+    for (const a of getLegalActionIntents(state, handSeat)) {
       if (a.type === 'playCard') set.add(a.cardId);
     }
     return set;
@@ -123,61 +133,27 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
   // --- dispatch helpers ------------------------------------------------------
 
   function act(action: Action) {
-    dispatch(action);
-    setSel(NO_SEL);
-  }
-
-  /** Begin playing a card: dispatch immediately if untargeted, else enter targeting. */
-  function startCardPlay(cardId: CardId, respond: boolean, player: PlayerId) {
-    const def = getCardDef(cardId);
-    if (!def || !def.needsTargets || !def.targetSpec) {
-      act(
-        respond
-          ? { type: 'respondPlayCard', player, cardId }
-          : { type: 'playCard', player, cardId },
-      );
-      return;
-    }
-    setSel({
-      kind: 'target',
-      cardId,
-      respond,
-      player,
-      spec: def.targetSpec,
-      units: [],
-      spaces: [],
-      players: [],
-      cards: [],
-    });
+    const ok = dispatch(action);
+    // A rejected action drops the unit selection outright. Otherwise it is left
+    // to the validity check above — so a gnome you just moved stays selected
+    // and can still plant on its new space.
+    if (!ok) setSel(NO_SEL);
   }
 
   /**
-   * Attempt to play with the chosen targets. Pre-checks via the card's own
-   * validate (engine-authored) so a bad pick can be retried; `fallback`
-   * restores the previous picks on failure.
+   * Begin playing a card. Dispatching WITHOUT targets lets the engine decide:
+   * an untargeted card resolves at once; a targeted one opens a `cardTargeting`
+   * decision (or reports "no legal targets" via a toast). The UI never builds
+   * target payloads itself — it answers the engine's steps one at a time.
    */
-  function attemptPlay(t: TargetSel, fallback: Sel | null) {
-    const def = getCardDef(t.cardId);
-    const targets = buildTargets(t);
-    if (def?.validate) {
-      const err = def.validate(state, t.player, targets);
-      if (err) {
-        g.pushToast(`${def.name}: ${err}`);
-        if (fallback) setSel(fallback);
-        return;
-      }
-    }
+  function startCardPlay(cardId: CardId, respond: boolean, player: PlayerId) {
+    // Clear any unit selection so a card play does not visually collide with it.
+    setSel(NO_SEL);
     act(
-      t.respond
-        ? { type: 'respondPlayCard', player: t.player, cardId: t.cardId, targets }
-        : { type: 'playCard', player: t.player, cardId: t.cardId, targets },
+      respond
+        ? { type: 'respondPlayCard', player, cardId }
+        : { type: 'playCard', player, cardId },
     );
-  }
-
-  /** Add a pick; auto-plays when every slot in the spec is filled. */
-  function addPick(next: TargetSel, prev: Sel) {
-    if (targetingComplete(next)) attemptPlay(next, prev);
-    else setSel(next);
   }
 
   // --- board click routing -----------------------------------------------------
@@ -185,23 +161,13 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
   function onCellClick(pos: Pos) {
     if (!interactive || playerToAct === null) return;
 
-    // 1) Card targeting mode: fill unit slots first, then space slots.
-    if (sel.kind === 'target') {
-      const t = sel;
-      if (t.spec.units && t.units.length < t.spec.units.count) {
-        const cand = unitsAt(state, pos).find((u) => !t.units.includes(u.id));
-        if (cand) {
-          addPick({ ...t, units: [...t.units, cand.id] }, t);
-          return;
-        }
-      }
-      if (
-        t.spec.spaces &&
-        t.spaces.length < t.spec.spaces.count &&
-        !t.spaces.some((q) => samePos(q, pos))
-      ) {
-        addPick({ ...t, spaces: [...t.spaces, pos] }, t);
-      }
+    // 1) Card targeting: the engine offers this step's options; the UI matches
+    // the clicked cell against them by kind (unit on the cell, or the space
+    // itself). It never inspects the card's rules.
+    if (decision?.kind === 'cardTargeting') {
+      if (decision.player !== playerToAct) return;
+      const opt = boardOptionAt(targetingOptions, state, pos);
+      if (opt) act({ type: 'selectTarget', player: decision.player, target: opt });
       return;
     }
 
@@ -273,16 +239,18 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
     const map = new Map<string, HighlightKind>();
     if (!interactive) return map;
 
-    if (sel.kind === 'target') {
-      const t = sel;
-      // Unit slots: candidate cells (any unit; the card's validate is the judge).
-      if (t.spec.units && t.units.length < t.spec.units.count) {
-        for (const u of Object.values(state.units)) {
-          if (!t.units.includes(u.id)) map.set(posKey(u.pos), 'target');
+    if (decision?.kind === 'cardTargeting') {
+      // Highlight this step's legal options (from the engine) and the picks
+      // already made in earlier steps.
+      for (const o of targetingOptions) {
+        if (o.kind === 'space') map.set(posKey(o.pos), 'target');
+        else if (o.kind === 'unit') {
+          const u = state.units[o.unitId];
+          if (u) map.set(posKey(u.pos), 'target');
         }
       }
-      for (const q of t.spaces) map.set(posKey(q), 'picked');
-      for (const uid of t.units) {
+      for (const q of decision.selected.spaces ?? []) map.set(posKey(q), 'picked');
+      for (const uid of decision.selected.units ?? []) {
         const u = state.units[uid];
         if (u) map.set(posKey(u.pos), 'picked');
       }
@@ -309,7 +277,7 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
       }
     }
     return map;
-  }, [state, sel, decision, legal, interactive]);
+  }, [state, sel, decision, legal, interactive, targetingOptions]);
 
   const selectedKey =
     sel.kind === 'unit' && state.units[sel.unitId] ? posKey(state.units[sel.unitId].pos) : null;
@@ -328,10 +296,23 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
       : [];
 
   return (
-    <div className="game-screen">
+    /* The data-* attributes mirror already-visible game state (status, phase,
+       whose decision is open). They exist so browser tests can wait on a
+       condition without scraping prose from the banner. */
+    <div
+      className="game-screen"
+      data-testid="game-screen"
+      data-status={state.status}
+      data-phase={state.turn?.phase ?? ''}
+      data-turn={state.turn?.number ?? ''}
+      data-active-player={state.turn?.activePlayer ?? ''}
+      data-player-to-act={playerToAct ?? ''}
+      data-decision={decision?.kind ?? ''}
+      data-interactive={interactive ? 'true' : 'false'}
+    >
       <header className="topbar">
         <span className="brand">🧙 Whimsy Wars</span>
-        <span className="banner">{bannerText(state, playerToAct)}</span>
+        <span className="banner" data-testid="banner">{bannerText(state, playerToAct)}</span>
         <label className="ff-toggle" title="Skip CPU pacing and fight animations">
           <input
             type="checkbox"
@@ -363,37 +344,39 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
           {/* Stable-height slot: the bar appearing/disappearing must not
               reflow the board. Targeting replaces the action bar. */}
           <div className="board-footer">
-            {sel.kind === 'target' ? (
+            {interactive && decision?.kind === 'cardTargeting' && decision.player === playerToAct ? (
               <TargetingBanner
                 state={state}
-                t={sel}
-                onCancel={() => setSel(NO_SEL)}
-                onPick={addPick}
-                onConfirm={() => attemptPlay(sel, sel)}
+                decision={decision}
+                options={targetingOptions}
+                onSelect={(target) => act({ type: 'selectTarget', player: decision.player, target })}
+                onCancel={() => act({ type: 'cancelTargeting', player: decision.player })}
               />
             ) : showActionBar ? (
-              <div className="action-bar">
+              <div className="action-bar" data-testid="action-bar">
                 <button
                   type="button"
                   className="btn"
                   disabled={!canDraw}
+                  data-testid="draw-card"
                   onClick={() => act({ type: 'drawCard', player: playerToAct! })}
                 >
                   🃏 Draw card (1 ✨)
                 </button>
                 {plantActions.map((a) => (
-                  <button key={a.gardenType} type="button" className="btn" onClick={() => act(a)}>
+                  <button key={a.gardenType} type="button" className="btn" data-testid={`plant-${a.gardenType}`} onClick={() => act(a)}>
                     {GARDEN_META[a.gardenType].emoji} Plant {GARDEN_META[a.gardenType].label}
                   </button>
                 ))}
                 {sel.kind === 'unit' && (
-                  <button type="button" className="btn small" onClick={() => setSel(NO_SEL)}>
+                  <button type="button" className="btn small" data-testid="deselect" onClick={() => setSel(NO_SEL)}>
                     Deselect
                   </button>
                 )}
                 <button
                   type="button"
                   className="btn warn"
+                  data-testid="end-turn"
                   onClick={() => act({ type: 'endTurn', player: playerToAct! })}
                 >
                   End turn ⏹
@@ -404,7 +387,9 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
         </section>
 
         <aside className="right-col">
-          {decision && decision.kind !== 'fightRespond' && (
+          {/* fightRespond → FightPanel; cardTargeting → the board-footer
+              TargetingBanner. Everything else gets the DecisionPanel. */}
+          {decision && decision.kind !== 'fightRespond' && decision.kind !== 'cardTargeting' && (
             <DecisionPanel
               state={state}
               decision={decision}
@@ -506,87 +491,95 @@ function CursePanel({ state }: { state: GameState }) {
   );
 }
 
+/**
+ * Card-agnostic targeting banner. It renders whatever the engine's current
+ * `cardTargeting` step asks for: unit / space steps are clicked on the board
+ * (options are highlighted there), while player / card / gardenType steps show
+ * chips. The prompt and the options both come from the engine — this component
+ * has no per-card knowledge.
+ */
 function TargetingBanner({
   state,
-  t,
+  decision,
+  options,
+  onSelect,
   onCancel,
-  onPick,
-  onConfirm,
 }: {
   state: GameState;
-  t: TargetSel;
+  decision: Extract<PendingDecision, { kind: 'cardTargeting' }>;
+  options: readonly CardTarget[];
+  onSelect: (target: CardTarget) => void;
   onCancel: () => void;
-  onPick: (next: TargetSel, prev: Sel) => void;
-  onConfirm: () => void;
 }) {
-  const wants: string[] = [];
-  if (t.spec.units && t.units.length < t.spec.units.count) {
-    wants.push(`${t.spec.units.description} (${t.units.length}/${t.spec.units.count})`);
-  }
-  if (t.spec.spaces && t.spaces.length < t.spec.spaces.count) {
-    wants.push(`${t.spec.spaces.description} (${t.spaces.length}/${t.spec.spaces.count})`);
-  }
-
-  const needPlayers = t.spec.players ? t.spec.players.count - t.players.length : 0;
-  const needCards = t.spec.cards ? t.spec.cards.count - t.cards.length : 0;
-  const needGardenType = !!t.spec.gardenType && t.gardenType === undefined;
-
-  const eligiblePlayers = needPlayers > 0 ? state.players.filter((p) => !t.players.includes(p.id)) : [];
-  const discardChoices = needCards > 0 ? [...new Set(state.discard)].filter((c) => !t.cards.includes(c)) : [];
-  const gardenTypes = needGardenType
-    ? (Object.keys(state.supply) as PlantableGardenType[]).filter((gt) => state.supply[gt] > 0)
-    : [];
-
+  const boardStep = decision.targetKind === 'unit' || decision.targetKind === 'space';
   return (
-    <div className="targeting-banner">
+    <div className="targeting-banner" data-testid="targeting-banner">
       <span>
-        🎯 <b>{cardName(t.cardId)}</b>
-        {wants.length > 0 && <>: click {wants.join(', then ')}</>}
-        {t.spec.players && needPlayers > 0 && <> · choose {t.spec.players.description}</>}
-        {t.spec.cards && needCards > 0 && <> · choose {t.spec.cards.description}</>}
-        {needGardenType && <> · choose {t.spec.gardenType!.description}</>}
+        🎯 <b>{cardName(decision.cardId)}</b>
+        {decision.stepCount > 1 && <> ({decision.stepIndex + 1}/{decision.stepCount})</>}: {decision.prompt}
+        {boardStep && <> — click a highlighted space</>}
       </span>
-      {eligiblePlayers.map((p) => (
-        <button
-          key={p.id}
-          type="button"
-          className="btn small"
-          style={{ borderColor: playerColor(p.id) }}
-          onClick={() => onPick({ ...t, players: [...t.players, p.id] }, t)}
-        >
-          {p.name}
-        </button>
+      {options.map((o) => (
+        <TargetChip key={targetChipKey(o)} state={state} target={o} onSelect={onSelect} />
       ))}
-      {discardChoices.map((c) => (
-        <button
-          key={c}
-          type="button"
-          className="btn small"
-          onClick={() => onPick({ ...t, cards: [...t.cards, c] }, t)}
-        >
-          {cardName(c)}
-        </button>
-      ))}
-      {gardenTypes.map((gt) => (
-        <button
-          key={gt}
-          type="button"
-          className="btn small"
-          onClick={() => onPick({ ...t, gardenType: gt }, t)}
-        >
-          {GARDEN_META[gt].emoji} {GARDEN_META[gt].label}
-        </button>
-      ))}
-      {anyTargetPicked(t) && !targetingComplete(t) && (
-        <button type="button" className="btn small accent" onClick={onConfirm}>
-          Play with current targets
-        </button>
-      )}
-      <button type="button" className="btn small warn" onClick={onCancel}>
+      <button type="button" className="btn small warn" data-testid="targeting-cancel" onClick={onCancel}>
         Cancel
       </button>
     </div>
   );
+}
+
+/** A clickable chip for a non-board target (player / discard card / garden type). */
+function TargetChip({
+  state,
+  target,
+  onSelect,
+}: {
+  state: GameState;
+  target: CardTarget;
+  onSelect: (target: CardTarget) => void;
+}) {
+  // Unit / space options are picked on the board, not as chips.
+  if (target.kind === 'unit' || target.kind === 'space') return null;
+  if (target.kind === 'player') {
+    return (
+      <button
+        type="button"
+        className="btn small"
+        style={{ borderColor: playerColor(target.playerId) }}
+        onClick={() => onSelect(target)}
+      >
+        {pname(state, target.playerId)}
+      </button>
+    );
+  }
+  if (target.kind === 'card') {
+    return (
+      <button type="button" className="btn small" onClick={() => onSelect(target)}>
+        {cardName(target.cardId)}
+      </button>
+    );
+  }
+  return (
+    <button type="button" className="btn small" onClick={() => onSelect(target)}>
+      {GARDEN_META[target.gardenType].emoji} {GARDEN_META[target.gardenType].label}
+    </button>
+  );
+}
+
+function targetChipKey(t: CardTarget): string {
+  switch (t.kind) {
+    case 'unit':
+      return `u:${t.unitId}`;
+    case 'space':
+      return `s:${t.pos.x},${t.pos.y}`;
+    case 'player':
+      return `p:${t.playerId}`;
+    case 'card':
+      return `c:${t.cardId}`;
+    case 'gardenType':
+      return `g:${t.gardenType}`;
+  }
 }
 
 function PassOverlay({
@@ -599,14 +592,14 @@ function PassOverlay({
   onConfirm: () => void;
 }) {
   return (
-    <div className="overlay opaque" role="dialog" aria-label="Pass the device">
+    <div className="overlay opaque" role="dialog" aria-label="Pass the device" data-testid="pass-overlay">
       <div className="overlay-card pass-card">
         <div className="pass-emoji">🤝</div>
         <h2>
           Pass the device to <span style={{ color: playerColor(seat) }}>{pname(state, seat)}</span>
         </h2>
         <p className="muted">Hands stay hidden until they take over.</p>
-        <button type="button" className="btn accent big" onClick={onConfirm}>
+        <button type="button" className="btn accent big" data-testid="pass-confirm" onClick={onConfirm}>
           I'm {pname(state, seat)} — continue
         </button>
       </div>
@@ -625,7 +618,7 @@ function EndOverlay({
 }) {
   const w = state.winner;
   return (
-    <div className="overlay" role="dialog" aria-label="Game over">
+    <div className="overlay" role="dialog" aria-label="Game over" data-testid="end-overlay">
       <div className="overlay-card end-card">
         <div className="pass-emoji">{w !== null ? '🏆' : '🍂'}</div>
         <h2>

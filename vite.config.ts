@@ -1,4 +1,7 @@
-import { defineConfig, type Plugin } from 'vite'
+// `vitest/config` re-exports Vite's defineConfig with the `test` block typed;
+// Vite itself ignores that block.
+import { defineConfig } from 'vitest/config'
+import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 /**
@@ -42,4 +45,10 @@ export default defineConfig({
   // Relative base: the bundle works from any host and any subpath
   // (Cloudflare/Netlify/Vercel at root, GitHub Pages under /repo/).
   base: './',
+  test: {
+    // Unit/integration tests only. The Playwright specs under e2e/ are driven
+    // by `npm run test:e2e`; without this they would also match Vitest's
+    // default glob and fail on the missing Playwright runner.
+    include: ['src/**/*.test.ts'],
+  },
 })

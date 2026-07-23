@@ -277,10 +277,14 @@ export interface CardStackEntry {
   player: PlayerId;
   cardId: CardId;
   targets?: CardTargets;
-  /** Nope-Gnome sets this on its victim; a cancelled card resolves to nothing. */
+  /** A counter-card sets this on its victim; a cancelled card resolves to nothing. */
   cancelled: boolean;
-  /** Nope-Gnome only: index into the stack of the entry it cancels. */
-  nopeTarget?: number;
+  /**
+   * Set for cards played in a response window whose definition is flagged
+   * `targetsRespondedCard` (Nope-Gnome): the stack index of the entry they
+   * were played in response to.
+   */
+  respondsToStackIndex?: number;
 }
 
 export type TimedEffectKind = 'greatWall' | 'lostInMaize';
@@ -298,6 +302,26 @@ export interface TimedEffect {
 // ---------------------------------------------------------------------------
 
 export type HomeHarvestChoice = 'wish' | 'gnome';
+
+// ---------------------------------------------------------------------------
+// Phased card targeting
+// ---------------------------------------------------------------------------
+
+/**
+ * One concrete, serializable target option for a single targeting step. The
+ * engine offers these one step at a time (`getPendingDecisionOptions`) and the
+ * player/AI answers with a `selectTarget` action carrying exactly one of them.
+ * As targets accumulate they fold into a `CardTargets` payload (the same shape
+ * a card's `validate` / `resolve` already consume).
+ */
+export type CardTarget =
+  | { kind: 'unit'; unitId: UnitId }
+  | { kind: 'space'; pos: Pos }
+  | { kind: 'player'; playerId: PlayerId }
+  | { kind: 'card'; cardId: CardId }
+  | { kind: 'gardenType'; gardenType: PlantableGardenType };
+
+export type TargetKind = CardTarget['kind'];
 
 export type PendingDecision =
   | { kind: 'rollOff'; player: PlayerId }
@@ -356,6 +380,38 @@ export type PendingDecision =
       unitId: UnitId;
       from: Pos;
       options: Pos[];
+    }
+  | {
+      /**
+       * Phased card targeting: `player` is midway through aiming `cardId`, one
+       * target step at a time. The card is NOT yet removed from hand — it is
+       * only committed (and re-validated) once the final step completes, so a
+       * cancelled or invalidated targeting leaves the game exactly as it was.
+       * The current step's legal options come from `getPendingDecisionOptions`
+       * (they are recomputed from live state, never stored, so they cannot go
+       * stale); `selected` holds the picks made in earlier steps.
+       */
+      kind: 'cardTargeting';
+      player: PlayerId;
+      cardId: CardId;
+      /** Targets chosen so far, folded into the eventual CardTargets payload. */
+      selected: CardTargets;
+      /** Zero-based index of the step now awaiting a pick. */
+      stepIndex: number;
+      /** Total steps in this card's flow (for "1 of 2" UI). */
+      stepCount: number;
+      /** Kind of target the current step wants (for card-agnostic rendering). */
+      targetKind: TargetKind;
+      /** Human-readable prompt for the current step. */
+      prompt: string;
+      /**
+       * The response window this play began inside, if any. Present ⇒ the play
+       * resolves via that window's rules on completion (and restoring it is how
+       * cancellation backs out); absent ⇒ a normal Action-Phase play.
+       */
+      restore?:
+        | Extract<PendingDecision, { kind: 'cardResponse' }>
+        | Extract<PendingDecision, { kind: 'fightRespond' }>;
     };
 
 // ---------------------------------------------------------------------------
@@ -387,6 +443,9 @@ export type Action =
   | { type: 'snailify'; player: PlayerId; accept: boolean }
   | { type: 'sacrificeGnome'; player: PlayerId; unitId: UnitId }
   | { type: 'snailMove'; player: PlayerId; to: Pos }
+  // --- phased card targeting (answers a 'cardTargeting' decision) --------------
+  | { type: 'selectTarget'; player: PlayerId; target: CardTarget }
+  | { type: 'cancelTargeting'; player: PlayerId }
   // --- action-phase actions ---------------------------------------------------
   | { type: 'move'; player: PlayerId; unitId: UnitId; to: Pos }
   | { type: 'plant'; player: PlayerId; pos: Pos; gardenType: PlantableGardenType }
