@@ -51,8 +51,9 @@
 
 import type { Action, CardId, CardTargets, GameState, PendingDecision, PlantableGardenType, PlayerId, Pos, Unit } from './types';
 import { EngineError } from './types';
-import { getLegalActionIntents, getPlayerToAct, getTargetOptions } from './engine';
+import { getLegalActionIntents, getPendingDecisionOptions, getPlayerToAct } from './engine';
 import { getCardDef } from './cards';
+import { firstCompleteTargets } from './targeting';
 import {
   canSpawnGnome,
   centerPos,
@@ -94,9 +95,11 @@ function completeTargets(state: GameState, action: Action): Action {
   if (action.targets !== undefined) return action;
   const def = getCardDef(action.cardId);
   if (!def?.needsTargets) return action;
-  const options = getTargetOptions(state, action);
-  if (options.length === 0) return action; // nothing valid; dispatch will report why
-  return { ...action, targets: options[0] };
+  // Greedily walk the card's targeting flow (first legal option per step). If
+  // no complete payload validates, leave it untargeted — dispatch then opens a
+  // cardTargeting decision, which the AI answers step by step (see below).
+  const targets = firstCompleteTargets(state, action.player, action.cardId);
+  return targets ? { ...action, targets } : action;
 }
 
 function chooseAiActionInner(state: GameState): Action {
@@ -116,6 +119,16 @@ function chooseAiActionInner(state: GameState): Action {
         return planFightRespond(state, actor, d);
       case 'cardResponse':
         return planCardResponse(state, actor, d);
+      case 'cardTargeting': {
+        // The AI normally attaches targets before dispatching, so it rarely
+        // lands here; when it does (a card with no dedicated planner, or being
+        // driven through the phased flow), take the first legal option each
+        // step. Honest step options guarantee this reaches a valid completion.
+        const options = getPendingDecisionOptions(state);
+        return options.length > 0
+          ? { type: 'selectTarget', player: actor, target: options[0] }
+          : { type: 'cancelTargeting', player: actor };
+      }
       case 'snailify':
         return { type: 'snailify', player: actor, accept: true };
       case 'sacrificeGnome':
