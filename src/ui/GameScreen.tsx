@@ -83,6 +83,9 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
   const g = useGame(options, seed);
   const { state, dispatch, playerToAct, actorIsCpu, needsPass, playback } = g;
   const [sel, setSel] = useState<Sel>(NO_SEL);
+  // After the game ends, "Review match" dismisses the end overlay so the board
+  // and full game log stay on screen; "Results" brings the overlay back.
+  const [reviewing, setReviewing] = useState(false);
 
   // Card plays are enumerated WITHOUT targets — dispatching a targeted play
   // opens a `cardTargeting` decision, and the engine then hands back one step's
@@ -322,6 +325,16 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
           ⏩ fast CPU
         </label>
         <span className="seed-tag" title="Game seed">#{seed}</span>
+        {state.status === 'finished' && reviewing && (
+          <button
+            type="button"
+            className="btn small accent"
+            data-testid="show-results"
+            onClick={() => setReviewing(false)}
+          >
+            🏁 Results
+          </button>
+        )}
         <button type="button" className="btn small" onClick={onQuit}>
           New game
         </button>
@@ -423,8 +436,13 @@ export function GameScreen({ options, seed, onPlayAgain, onQuit }: GameScreenPro
       </div>
 
       {/* Overlays (priority: end > fight playback > pass interstitial) */}
-      {state.status === 'finished' ? (
-        <EndOverlay state={state} onPlayAgain={onPlayAgain} onQuit={onQuit} />
+      {state.status === 'finished' && !reviewing ? (
+        <EndOverlay
+          state={state}
+          onPlayAgain={onPlayAgain}
+          onQuit={onQuit}
+          onReview={() => setReviewing(true)}
+        />
       ) : playback ? (
         <FightPlaybackOverlay state={state} playback={playback} onSkip={g.skipPlayback} />
       ) : needsPass && playerToAct !== null ? (
@@ -611,10 +629,12 @@ function EndOverlay({
   state,
   onPlayAgain,
   onQuit,
+  onReview,
 }: {
   state: GameState;
   onPlayAgain: () => void;
   onQuit: () => void;
+  onReview: () => void;
 }) {
   const w = state.winner;
   return (
@@ -638,6 +658,9 @@ function EndOverlay({
             Change setup
           </button>
         </div>
+        <button type="button" className="btn ghost" data-testid="review-match" onClick={onReview}>
+          🔍 Review the match — board &amp; full log
+        </button>
       </div>
     </div>
   );
