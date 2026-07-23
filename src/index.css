@@ -117,6 +117,16 @@ h2 {
   padding: 10px 20px;
   font-size: 1.05rem;
 }
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  padding: 4px 10px;
+}
+.btn.ghost:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--text);
+}
 
 .btn-row {
   display: flex;
@@ -773,6 +783,18 @@ h2 {
 }
 
 /* Log */
+.game-log-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.game-log-panel.collapsed {
+  flex: 0 0 auto;
+}
+.log-title {
+  align-items: center;
+}
 .game-log {
   flex: 1;
   min-height: 120px;
