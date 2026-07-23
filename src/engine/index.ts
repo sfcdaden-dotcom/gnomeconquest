@@ -60,3 +60,15 @@ export type { WhimsyCardDef, CurseCardDef, CardTiming, TargetStep, TargetingCont
 
 // Heuristic CPU player.
 export { chooseAiAction } from './ai';
+
+// Self-play match recorder (training-data generation).
+export {
+  MATCH_RECORD_SCHEMA,
+  DEFAULT_MAX_ACTIONS,
+  playSelfPlayGame,
+  simulateSelfPlay,
+  replayMatch,
+  toNdjson,
+  fromNdjson,
+} from './selfplay';
+export type { MatchRecord, MatchResult, MatchEndReason } from './selfplay';
