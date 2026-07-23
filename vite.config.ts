@@ -4,6 +4,8 @@ import { defineConfig } from 'vitest/config'
 import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
+import { cloudflare } from "@cloudflare/vite-plugin";
+
 /**
  * Content-Security-Policy for the PRODUCTION bundle, injected at build time
  * only — the dev server needs inline scripts (react fast-refresh preamble)
@@ -41,7 +43,7 @@ function buildTimeCsp(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), buildTimeCsp()],
+  plugins: [react(), buildTimeCsp(), cloudflare()],
   // Relative base: the bundle works from any host and any subpath
   // (Cloudflare/Netlify/Vercel at root, GitHub Pages under /repo/).
   base: './',
