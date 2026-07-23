@@ -26,11 +26,13 @@
 import type {
   CardId,
   CardStackEntry,
+  CardTarget,
   CardTargets,
   GameState,
   PlantableGardenType,
   PlayerId,
   Pos,
+  TargetKind,
   Unit,
 } from './types';
 import {
@@ -50,6 +52,7 @@ import {
   gnomeExitBlocked,
   inBounds,
   maizeExitCost,
+  orthNeighbors,
   otherPlayingPlayers,
   playerUnits,
   posKey,
@@ -70,25 +73,42 @@ import { handleEntry, makeGarden } from './gardens';
 export type CardTiming = 'sudden' | 'ritual';
 
 /**
- * Declarative targeting spec. Two consumers:
- *  - UIs, to build pickers and describe what is wanted;
- *  - the engine's target enumerator (legalActions.ts), which uses the slot
- *    kinds + counts to generate every candidate `CardTargets` payload and
- *    keeps only those the card's own `validate` accepts.
+ * Phased targeting. Instead of describing slots and letting the engine expand
+ * every complete `CardTargets` payload up front, a targeted card declares an
+ * ORDERED FLOW of steps. The engine surfaces one step at a time (a
+ * `cardTargeting` decision); each step computes its own legal options from the
+ * live state AND the targets already chosen in earlier steps, so later choices
+ * can be narrowed by earlier ones (Plot Twist: pick a space, then only its
+ * orthogonal neighbours are offered). This keeps the cost proportional to the
+ * current decision step, not the product of every slot.
  *
- * The authoritative validation is always each card's `validate` function; the
- * spec only bounds the search space.
- *
- * `ordered` (multi-slot only): when true, [a,b] and [b,a] are DIFFERENT target
- * payloads and both are enumerated (Instigation — the first gnome is the
- * attacker). When false/absent, only one order per combination is generated.
+ * The card's own `validate` remains the final authority: it re-runs on the
+ * complete payload before the card is committed, so a step author never has to
+ * be perfectly exhaustive for correctness — only honest enough that every
+ * option it returns can lead to at least one valid completion (which keeps the
+ * UI/AI from ever offering a dead-end pick).
  */
-export interface TargetSpec {
-  units?: { count: number; description: string; ordered?: boolean };
-  spaces?: { count: number; description: string; ordered?: boolean };
-  players?: { count: number; description: string };
-  cards?: { count: number; from: 'discard'; description: string };
-  gardenType?: { description: string };
+export interface TargetingContext {
+  player: PlayerId;
+  /** Targets chosen in earlier steps (read to narrow this step). */
+  selected: CardTargets;
+}
+
+export interface TargetStep {
+  /** Which `CardTargets` field this step fills. */
+  kind: TargetKind;
+  /** Prompt shown while this step awaits a pick ("Choose the first garden"). */
+  prompt: string;
+  /**
+   * Whether pick order matters relative to OTHER steps of the same kind. Only
+   * the complete-enumeration analysis helper reads it, to keep one canonical
+   * order for symmetric multi-picks (Gnomio & Juliet) while emitting both
+   * orders for genuinely ordered ones (Instigation: attacker then defender).
+   * Phased play never duplicates — the player makes one sequence of picks.
+   */
+  ordered?: boolean;
+  /** Legal options for THIS step, given the state and the earlier picks. */
+  getOptions: (state: GameState, ctx: TargetingContext) => CardTarget[];
 }
 
 export interface WhimsyCardDef {
@@ -108,9 +128,14 @@ export interface WhimsyCardDef {
    * a second counter-card only needs this flag, not a change to the router.
    */
   targetsRespondedCard?: boolean;
-  /** Does this card require a `targets` payload? */
+  /** Does this card require a `targets` payload? (⟺ `targetFlow` is present.) */
   needsTargets: boolean;
-  targetSpec?: TargetSpec;
+  /**
+   * The ordered targeting flow, built from the live state (so a card can size
+   * itself — Pocket Shovel plants as many tunnels as remain). Absent for
+   * untargeted cards. See `TargetStep`.
+   */
+  targetFlow?: (state: GameState, player: PlayerId) => TargetStep[];
   /** Cheap existence check: could this card be played at all right now? */
   hasAnyPlay?: (state: GameState, player: PlayerId) => boolean;
   /**
@@ -224,6 +249,163 @@ function anyEmptySpace(state: GameState): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Targeting-flow helpers
+//
+// Small constructors that turn a card-authored "which values are legal for
+// this step" function into a `TargetStep`. They keep the option order
+// deterministic (sorted unit ids, row-major spaces, seat order) so seeded
+// replays are stable, and map raw values into the serializable `CardTarget`
+// shape the engine surfaces. Cards compose these; none of them, nor the engine
+// that runs them, ever branches on a card id.
+// ---------------------------------------------------------------------------
+
+const DIAGONAL_OFFSETS: Pos[] = [
+  { x: -1, y: -1 },
+  { x: 1, y: -1 },
+  { x: -1, y: 1 },
+  { x: 1, y: 1 },
+];
+const STRAIGHT_TWO_OFFSETS: Pos[] = [
+  { x: 0, y: -2 },
+  { x: 2, y: 0 },
+  { x: 0, y: 2 },
+  { x: -2, y: 0 },
+];
+
+function allBoardSpaces(state: GameState): Pos[] {
+  const n = state.config.boardSize;
+  const out: Pos[] = [];
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) out.push({ x, y });
+  }
+  return out;
+}
+
+function allGnomes(state: GameState): Unit[] {
+  return Object.values(state.units).filter((u) => u.kind === 'gnome');
+}
+
+function ownGnomeList(state: GameState, player: PlayerId): Unit[] {
+  return playerUnits(state, player).filter((u) => u.kind === 'gnome');
+}
+
+/** Board spaces holding a non-Home garden, row-major. */
+function nonHomeGardenSpaces(state: GameState): Pos[] {
+  return allBoardSpaces(state).filter((p) => {
+    const g = gardenAt(state, p);
+    return !!g && g.type !== 'home';
+  });
+}
+
+/** Board spaces holding any garden, row-major. */
+function anyGardenSpaces(state: GameState): Pos[] {
+  return allBoardSpaces(state).filter((p) => gardenAt(state, p) !== null);
+}
+
+/** The unit chosen in an earlier step (or undefined if it has since vanished). */
+function pickedUnit(state: GameState, ctx: TargetingContext, i: number): Unit | undefined {
+  const id = ctx.selected.units?.[i];
+  return id === undefined ? undefined : state.units[id];
+}
+
+function pickedSpace(ctx: TargetingContext, i: number): Pos | undefined {
+  return ctx.selected.spaces?.[i];
+}
+
+function unitStep(
+  prompt: string,
+  pick: (state: GameState, ctx: TargetingContext) => Unit[],
+  ordered = false,
+): TargetStep {
+  return {
+    kind: 'unit',
+    prompt,
+    ordered,
+    getOptions: (s, ctx) =>
+      [...pick(s, ctx)]
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+        .map((u) => ({ kind: 'unit', unitId: u.id })),
+  };
+}
+
+function spaceStep(
+  prompt: string,
+  pick: (state: GameState, ctx: TargetingContext) => Pos[],
+  ordered = false,
+): TargetStep {
+  return {
+    kind: 'space',
+    prompt,
+    ordered,
+    getOptions: (s, ctx) => pick(s, ctx).map((p) => ({ kind: 'space', pos: { x: p.x, y: p.y } })),
+  };
+}
+
+function playerStep(
+  prompt: string,
+  pick: (state: GameState, ctx: TargetingContext) => PlayerId[],
+): TargetStep {
+  return {
+    kind: 'player',
+    prompt,
+    getOptions: (s, ctx) => pick(s, ctx).map((id) => ({ kind: 'player', playerId: id })),
+  };
+}
+
+function cardZoneStep(
+  prompt: string,
+  pick: (state: GameState, ctx: TargetingContext) => CardId[],
+): TargetStep {
+  return {
+    kind: 'card',
+    prompt,
+    getOptions: (s, ctx) => pick(s, ctx).map((cardId) => ({ kind: 'card', cardId })),
+  };
+}
+
+function gardenTypeStep(
+  prompt: string,
+  pick: (state: GameState, ctx: TargetingContext) => PlantableGardenType[],
+): TargetStep {
+  return {
+    kind: 'gardenType',
+    prompt,
+    getOptions: (s, ctx) => pick(s, ctx).map((gardenType) => ({ kind: 'gardenType', gardenType })),
+  };
+}
+
+/** Diagonally adjacent, on-board, non-walled destinations for a card move. */
+function diagonalDests(state: GameState, unit: Unit): Pos[] {
+  return DIAGONAL_OFFSETS.map((d) => ({ x: unit.pos.x + d.x, y: unit.pos.y + d.y })).filter(
+    (q) => inBounds(state, q) && !entryBlockedByWall(state, q),
+  );
+}
+
+/** Orthogonally adjacent, on-board, non-walled destinations for a card move. */
+function orthDests(state: GameState, unit: Unit): Pos[] {
+  return orthNeighbors(state, unit.pos).filter((q) => !entryBlockedByWall(state, q));
+}
+
+/** Straight-two destinations for Slippery Trail (mirrors its `validate`). */
+function straightTwoDests(state: GameState, unit: Unit): Pos[] {
+  const out: Pos[] = [];
+  for (const d of STRAIGHT_TWO_OFFSETS) {
+    const to = { x: unit.pos.x + d.x, y: unit.pos.y + d.y };
+    if (!inBounds(state, to)) continue;
+    const mid = { x: unit.pos.x + d.x / 2, y: unit.pos.y + d.y / 2 };
+    if (hasBlockingCritter(state, mid, unit.owner)) continue;
+    if (entryBlockedByWall(state, mid) || entryBlockedByWall(state, to)) continue;
+    const midG = gardenAt(state, mid);
+    if (midG && midG.type === 'maize' && gardenIsActive(state, midG) && gnomeExitBlocked(state, { ...unit, pos: mid })) {
+      continue;
+    }
+    if (validateCardExit(state, unit, mid) !== null) continue;
+    out.push(to);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Sudden Magic (10)
 // ---------------------------------------------------------------------------
 
@@ -234,10 +416,19 @@ const hiddenPassage: WhimsyCardDef = {
   timing: 'sudden',
   copies: 2,
   needsTargets: true,
-  targetSpec: {
-    units: { count: 1, description: 'a gnome you control' },
-    spaces: { count: 1, description: 'a diagonally adjacent space' },
-  },
+  targetFlow: () => [
+    unitStep(
+      'Choose a gnome you control to move diagonally',
+      (s, ctx) =>
+        ownGnomeList(s, ctx.player).filter(
+          (u) => validateCardExit(s, u, null) === null && diagonalDests(s, u).length > 0,
+        ),
+    ),
+    spaceStep('Choose the diagonal destination', (s, ctx) => {
+      const u = pickedUnit(s, ctx, 0);
+      return u ? diagonalDests(s, u) : [];
+    }),
+  ],
   hasAnyPlay: (s, p) => anyOwnGnome(s, p),
   validate: (s, p, t) => {
     const u = targetUnit(s, t, 0);
@@ -266,7 +457,7 @@ const snakeEyes: WhimsyCardDef = {
   timing: 'sudden',
   copies: 2,
   needsTargets: true,
-  targetSpec: { players: { count: 1, description: 'any player' } },
+  targetFlow: () => [playerStep('Choose any player', (s) => s.players.map((p) => p.id))],
   validate: (s, _p, t) => {
     const target = t?.players?.[0];
     if (target === undefined || !s.players[target]) return 'target must be a player';
@@ -285,10 +476,16 @@ const slipperyTrail: WhimsyCardDef = {
   timing: 'sudden',
   copies: 2,
   needsTargets: true,
-  targetSpec: {
-    units: { count: 1, description: 'a gnome you control' },
-    spaces: { count: 1, description: 'a space 2 away in an orthogonal line' },
-  },
+  targetFlow: () => [
+    unitStep(
+      'Choose a gnome you control to slide 2 spaces',
+      (s, ctx) => ownGnomeList(s, ctx.player).filter((u) => straightTwoDests(s, u).length > 0),
+    ),
+    spaceStep('Choose the straight-line destination', (s, ctx) => {
+      const u = pickedUnit(s, ctx, 0);
+      return u ? straightTwoDests(s, u) : [];
+    }),
+  ],
   hasAnyPlay: (s, p) => anyOwnGnome(s, p),
   validate: (s, p, t) => {
     const u = targetUnit(s, t, 0);
@@ -339,10 +536,16 @@ const gustOfWind: WhimsyCardDef = {
   timing: 'sudden',
   copies: 2,
   needsTargets: true,
-  targetSpec: {
-    units: { count: 1, description: 'any gnome' },
-    spaces: { count: 1, description: 'an orthogonally adjacent space' },
-  },
+  targetFlow: () => [
+    unitStep(
+      'Choose any gnome to move 1 space',
+      (s) => allGnomes(s).filter((u) => validateCardExit(s, u, null) === null && orthDests(s, u).length > 0),
+    ),
+    spaceStep('Choose the orthogonal destination', (s, ctx) => {
+      const u = pickedUnit(s, ctx, 0);
+      return u ? orthDests(s, u) : [];
+    }),
+  ],
   hasAnyPlay: (s) => anyGnome(s),
   validate: (s, _p, t) => {
     const u = targetUnit(s, t, 0);
@@ -415,7 +618,14 @@ const gnomePlaceLikeHome: WhimsyCardDef = {
   timing: 'sudden',
   copies: 2,
   needsTargets: true,
-  targetSpec: { units: { count: 1, description: 'any gnome whose owner still has a Home Garden' } },
+  targetFlow: () => [
+    unitStep('Choose any gnome to send home', (s) =>
+      allGnomes(s).filter((u) => {
+        const home = gardenAt(s, s.players[u.owner].homePos);
+        return !!home && home.type === 'home' && home.owner === u.owner && validateCardExit(s, u, null) === null;
+      }),
+    ),
+  ],
   hasAnyPlay: (s) =>
     Object.values(s.units).some((u) => {
       if (u.kind !== 'gnome') return false;
@@ -449,7 +659,7 @@ const rocketPropelledGnome: WhimsyCardDef = {
   timing: 'sudden',
   copies: 2,
   needsTargets: true,
-  targetSpec: { units: { count: 1, description: 'any gnome' } },
+  targetFlow: () => [unitStep('Choose any gnome to destroy', (s) => allGnomes(s))],
   hasAnyPlay: (s) => anyGnome(s),
   validate: (s, _p, t) => {
     const u = targetUnit(s, t, 0);
@@ -474,10 +684,13 @@ const wildGrowth: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: {
-    spaces: { count: 1, description: 'an empty space (no garden, no critters)' },
-    gardenType: { description: 'any plantable garden type with supply left' },
-  },
+  targetFlow: () => [
+    spaceStep('Choose an empty space', (s) => allBoardSpaces(s).filter((p) => isEmptySpace(s, p))),
+    gardenTypeStep(
+      'Choose a garden type to plant',
+      (s) => (Object.keys(s.supply) as PlantableGardenType[]).filter((gt) => s.supply[gt] > 0),
+    ),
+  ],
   hasAnyPlay: (s) => anyEmptySpace(s) && Object.values(s.supply).some((n) => n > 0),
   validate: (s, _p, t) => {
     const pos = targetSpace(t, 0);
@@ -504,11 +717,19 @@ const instigation: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: {
-    // Ordered: the first gnome is the attacker, so [a,b] and [b,a] are
-    // genuinely different plays and both are enumerated.
-    units: { count: 2, description: 'two gnomes with different owners (first chosen = attacker)', ordered: true },
-  },
+  // Ordered: the first gnome chosen is the attacker, so [a,b] and [b,a] are
+  // genuinely different plays. Step 2 is narrowed to gnomes of a different owner.
+  targetFlow: () => [
+    unitStep('Choose the attacking gnome', (s) => allGnomes(s), true),
+    unitStep(
+      'Choose the defending gnome (different owner)',
+      (s, ctx) => {
+        const a = pickedUnit(s, ctx, 0);
+        return a ? allGnomes(s).filter((u) => u.id !== a.id && u.owner !== a.owner) : [];
+      },
+      true,
+    ),
+  ],
   hasAnyPlay: (s) => {
     const owners = new Set(
       Object.values(s.units)
@@ -550,7 +771,15 @@ const lawnmowerOfDoom: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { spaces: { count: 1, description: 'a non-Home garden adjacent to your gnome' } },
+  targetFlow: () => [
+    spaceStep('Choose a non-Home garden next to your gnome', (s, ctx) =>
+      allBoardSpaces(s).filter((pos) => {
+        const g = gardenAt(s, pos);
+        if (!g || g.type === 'home') return false;
+        return ownGnomeList(s, ctx.player).some((u) => Math.abs(u.pos.x - pos.x) + Math.abs(u.pos.y - pos.y) === 1);
+      }),
+    ),
+  ],
   hasAnyPlay: (s, p) =>
     playerUnits(s, p).some(
       (u) =>
@@ -591,7 +820,15 @@ const plotTwist: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { spaces: { count: 2, description: 'two orthogonally adjacent spaces' } },
+  // Unordered pair: selecting the first space narrows the second step to that
+  // space's orthogonal neighbours (≤4), instead of every board-wide pairing.
+  targetFlow: () => [
+    spaceStep('Choose the first space to swap', (s) => allBoardSpaces(s)),
+    spaceStep('Choose an adjacent space to swap with', (s, ctx) => {
+      const a = pickedSpace(ctx, 0);
+      return a ? orthNeighbors(s, a) : [];
+    }),
+  ],
   validate: (s, _p, t) => {
     const a = targetSpace(t, 0);
     const b = targetSpace(t, 1);
@@ -655,7 +892,7 @@ const greatWallOfWhimsy: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { spaces: { count: 1, description: 'a non-Home garden' } },
+  targetFlow: () => [spaceStep('Choose a non-Home garden to wall', (s) => nonHomeGardenSpaces(s))],
   hasAnyPlay: (s) => Object.values(s.gardens).some((g) => g.type !== 'home'),
   validate: (s, _p, t) => {
     const pos = targetSpace(t, 0);
@@ -679,7 +916,8 @@ const sundownSabotage: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { spaces: { count: 1, description: 'any garden' } },
+  targetFlow: () => [spaceStep('Choose any garden', (s) => anyGardenSpaces(s))],
+  hasAnyPlay: (s) => Object.values(s.gardens).length > 0,
   validate: (s, _p, t) => {
     const pos = targetSpace(t, 0);
     if (!pos || !inBounds(s, pos)) return 'space is off the board';
@@ -701,7 +939,11 @@ const ritualMagic: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { players: { count: 1, description: 'another player holding at least 1 card' } },
+  targetFlow: () => [
+    playerStep('Choose a player to steal from', (s, ctx) =>
+      s.players.filter((pl) => pl.id !== ctx.player && pl.hand.length > 0).map((pl) => pl.id),
+    ),
+  ],
   hasAnyPlay: (s, p) => s.players.some((pl) => pl.id !== p && pl.hand.length > 0),
   validate: (s, p, t) => {
     const target = t?.players?.[0];
@@ -729,7 +971,7 @@ const seeingDouble: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { units: { count: 1, description: 'any gnome' } },
+  targetFlow: () => [unitStep('Choose any gnome to clone', (s) => allGnomes(s))],
   hasAnyPlay: (s) => anyGnome(s),
   validate: (s, _p, t) => {
     const u = targetUnit(s, t, 0);
@@ -753,7 +995,14 @@ const gnomioAndJuliet: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { units: { count: 2, description: 'any two gnomes (any owners)' } },
+  // Unordered pair (marriage is symmetric); step 2 excludes the first gnome.
+  targetFlow: () => [
+    unitStep('Choose the first gnome to marry', (s) => allGnomes(s)),
+    unitStep('Choose the second gnome to marry', (s, ctx) => {
+      const a = pickedUnit(s, ctx, 0);
+      return a ? allGnomes(s).filter((u) => u.id !== a.id) : [];
+    }),
+  ],
   hasAnyPlay: (s) => Object.values(s.units).filter((u) => u.kind === 'gnome').length >= 2,
   validate: (s, _p, t) => {
     const a = targetUnit(s, t, 0);
@@ -778,7 +1027,9 @@ const anotherGnomesTreasure: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { cards: { count: 1, from: 'discard', description: 'a card in the discard pile' } },
+  targetFlow: () => [
+    cardZoneStep('Choose a card from the discard pile', (s) => [...new Set(s.discard)]),
+  ],
   hasAnyPlay: (s) => s.discard.length > 0,
   validate: (s, _p, t) => {
     const id = t?.cards?.[0];
@@ -804,7 +1055,7 @@ const mushroomCloud: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { spaces: { count: 1, description: 'a non-Home garden' } },
+  targetFlow: () => [spaceStep('Choose a non-Home garden to nuke', (s) => nonHomeGardenSpaces(s))],
   hasAnyPlay: (s) => Object.values(s.gardens).some((g) => g.type !== 'home'),
   validate: (s, _p, t) => {
     const pos = targetSpace(t, 0);
@@ -829,7 +1080,17 @@ const pocketShovel: WhimsyCardDef = {
   timing: 'ritual',
   copies: 2,
   needsTargets: true,
-  targetSpec: { spaces: { count: 2, description: 'empty spaces (as many as tunnel tiles remain, max 2)' } },
+  // Dynamic length: one empty-space step per tunnel tile remaining (max 2).
+  // Each step excludes spaces already chosen, so no duplicate/reversed picks.
+  targetFlow: (s) => {
+    const required = Math.min(2, s.supply.tunnel);
+    const step = (n: number) =>
+      spaceStep(required === 1 ? 'Choose an empty space' : `Choose empty space ${n} of ${required}`, (st, ctx) => {
+        const chosen = new Set((ctx.selected.spaces ?? []).map(posKey));
+        return allBoardSpaces(st).filter((p) => isEmptySpace(st, p) && !chosen.has(posKey(p)));
+      });
+    return Array.from({ length: required }, (_, i) => step(i + 1));
+  },
   hasAnyPlay: (s) => s.supply.tunnel > 0 && anyEmptySpace(s),
   validate: (s, _p, t) => {
     if (s.supply.tunnel <= 0) return 'the shared supply has no tunnel tiles left';
@@ -1188,7 +1449,12 @@ export function handleCardResponsePass(draft: GameState, player: PlayerId): void
   if (draft.responseQueue[0] === player) draft.responseQueue.shift();
 }
 
-/** Play a Sudden Magic card inside a cardResponse window. */
+/**
+ * Play a Sudden Magic card inside a cardResponse window (targets already
+ * chosen, or none needed). Phased targeting for a card that still needs targets
+ * is routed separately (targeting.ts) and lands back in `commitCardResponsePlay`
+ * once the last target is picked.
+ */
 export function handleCardResponsePlay(
   draft: GameState,
   player: PlayerId,
@@ -1201,10 +1467,25 @@ export function handleCardResponsePlay(
   if (!d.playableCards.includes(cardId)) {
     badArg(`Card ${cardId} is not playable in this response window`);
   }
-  // Generic: any card whose definition says it acts on the card it responds to
-  // gets the responded-to stack index recorded. No card ids appear here.
+  commitCardResponsePlay(draft, player, cardId, targets, d.stackIndex);
+}
+
+/**
+ * Commit a card-response play: close the window, advance the response queue and
+ * push the card onto the stack. Shared by the immediate path (above) and the
+ * completion of phased targeting, so both do the identical bookkeeping.
+ * `stackIndex` is the entry being responded to — recorded on the new stack
+ * entry only for cards flagged `targetsRespondedCard` (generic; no card ids).
+ */
+export function commitCardResponsePlay(
+  draft: GameState,
+  player: PlayerId,
+  cardId: CardId,
+  targets: CardTargets | undefined,
+  stackIndex: number,
+): void {
   const def = getCardDef(cardId);
-  const respondsToStackIndex = def?.targetsRespondedCard ? d.stackIndex : undefined;
+  const respondsToStackIndex = def?.targetsRespondedCard ? stackIndex : undefined;
   draft.pendingDecision = null;
   if (draft.responseQueue[0] === player) draft.responseQueue.shift();
   playCardFromHand(draft, player, cardId, targets, respondsToStackIndex);
