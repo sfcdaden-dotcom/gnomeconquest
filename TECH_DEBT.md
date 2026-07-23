@@ -55,26 +55,29 @@ blocks · **P3** opportunistic.
 
 ## P3
 
-- **Target enumeration is generate-and-filter, so it is quadratic for
-  two-space cards.** `getLegalActions` walks C(boardArea, 2) candidate payloads
-  for Pocket Shovel / Plot Twist and filters them through `validate`.
-  Measured on a mid-game state with a hand of the seven widest cards:
-  **4.6–5.7 ms** on 7×7 (1,362 actions) and **25.6–30.2 ms** on 11×11 (7,366
-  actions), versus ~0.06 ms for the same call before the contract change —
-  which returned 36 *unexecutable* actions instead. Not on any hot path today:
-  the UI and AI both use `getLegalActionIntents` (~0.06 ms, unchanged) and only
-  expand targets for the one card being aimed, and full-game AI throughput is
-  unchanged.
+- ~~**Target enumeration is generate-and-filter, so it is quadratic for
+  two-space cards**, with a hard `MAX_TARGET_COMBINATIONS` ceiling at 15×15.~~
+  **FIXED 2026-07-23** by phased targeting. Cards no longer expand every
+  complete `CardTargets` payload up front: a targeted play opens a
+  `cardTargeting` decision and the engine offers one step's options at a time
+  (`getPendingDecisionOptions`), narrowed by the earlier picks. Listing options
+  is now proportional to the current step, not the product of every slot —
+  measured **0.012 ms** to list Plot Twist's 49 first-space options on 7×7 and
+  **0.014 ms** for its 225 on 15×15 (which the old enumerator refused
+  entirely), then ~0.005 ms for the ≤4 second-step neighbours. The full
+  cartesian expansion survives only as the off-hot-path analysis helper
+  `enumerateCompleteCardActions` (phased, so still bounded by real branching —
+  no ceiling). Full-game AI throughput improved (4.39 → 3.07 ms/action) because
+  the AI's target-completion fallback walks the flow greedily instead of
+  enumerating. The card is not removed from hand until targeting completes, so
+  cancelling / invalidation never duplicates, loses or double-charges a card.
+  See `targeting.ts`, `targeting.test.ts`, and the two Playwright cases.
 
-  Past `MAX_TARGET_COMBINATIONS` the engine throws rather than truncating (see
-  the constant's doc comment for why). That makes over-large boards a loud
-  failure instead of a silent correctness hole, but it *is* a hard ceiling at
-  15×15. The real fix is per-slot candidate pruning — narrowing each slot's
-  domain before the cartesian product (e.g. Plot Twist only ever wants
-  orthogonally adjacent pairs, 2·n·(n-1) of them, not all C(n², 2)) — which
-  would make both the cost and the ceiling disappear. Worth doing before board
-  size is ever exposed in the setup UI, or before adding a card with three
-  space slots.
+  Residual: Pocket Shovel's *complete* enumeration (the analysis helper) is
+  still O(area²) — but that is the true size of its legal set (any two empty
+  spaces), not a narrowing failure, and it is off every hot path. A three-space
+  card would compound it; if one is ever added, cap or lazily page the analysis
+  helper rather than the normal phased path.
 - **Browser tests cover the happy path only.** `e2e/gameplay.spec.ts` drives
   setup → roll-off → harvest → move → plant → fight → response window → end
   turn on a fixed seed. Not covered: 4-player games, CPU seats, the snail

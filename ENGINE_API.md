@@ -27,7 +27,8 @@ implementation detail and may move again.
 | `turns.ts` | roll-off, turn start/end, movement legality, `getPlayerToAct` |
 | `settle.ts` | the auto-advance loop and its convergence diagnostics |
 | `elimination.ts` | eliminations, snailify, win detection |
-| `legalActions.ts` | legal-action enumeration + card-target expansion |
+| `legalActions.ts` | legal-action intents + complete-action analysis expansion |
+| `targeting.ts` | phased card targeting: the `cardTargeting` transaction, step options, enumeration |
 | `gardens.ts` | harvests, planting, entry effects |
 | `fights.ts` | fight resolution (Respond → Roll → Resolve) |
 | `cards.ts` | card framework, definitions, the card stack |
@@ -35,8 +36,9 @@ implementation detail and may move again.
 | `setup.ts` / `gardenPresets.ts` / `rng.ts` / `types.ts` | creation, layouts, RNG, types |
 
 Dependencies run one way through the top layer — `engine → {actions, settle,
-legalActions} → turns → elimination → {gardens, cards, fights} → helpers` — so
-the split introduces no cycles. The rules layer keeps its pre-existing mutual
+legalActions} → {targeting, turns} → elimination → {gardens, cards, fights} →
+helpers` — so the split introduces no cycles. `targeting.ts` calls the low-level
+commit helpers in `cards.ts` / `fights.ts` but is never imported back by them. The rules layer keeps its pre-existing mutual
 imports (`cards ↔ fights`, `cards → gardens → fights`): a card can queue a
 fight and a fight can play a card, which is inherent to the rules rather than
 an artifact of the file layout.
@@ -111,58 +113,78 @@ identifiable from the message alone.
 | `slide` / `tunnel` | `slide` / `tunnel`, `declineEffect` when optional |
 | `fightRespond` | `respondPass`, `respondPlayCard` |
 | `cardResponse` | `respondPass`, `respondPlayCard` (incl. Nope-Gnome) |
+| `cardTargeting` | `selectTarget` (one of `getPendingDecisionOptions`), `cancelTargeting` |
 | `discard` | `discardCard` |
 | `snailify` | `snailify` |
 | `sacrificeGnome` (Magic Drain) | `sacrificeGnome` |
 | `snailMove` (Snailmaggedon) | `snailMove`, `declineEffect` |
 
-### The legal-action contract
+### The legal-action contract (phased targeting)
 
-`getLegalActions` enumerates every answer, and **every action it returns is
-complete and immediately executable** — `applyAction` will not reject it for
-missing or invalid targets. Targeted cards are expanded into one action per
-valid `CardTargets` payload, so no consumer needs card-specific knowledge to
-finish an action the engine called legal.
+**Primary API — `getLegalActionIntents(state[, player]) → Action[]`.** Every
+legal move for the player who must act, with card plays left **untargeted**
+(one `playCard` / `respondPlayCard` intent per playable card, no `targets`).
+Cheap: no combinatorial work. This is what the UI and the AI use.
 
-Two lower-level entry points exist for callers that do not want that expansion
-(it is quadratic in the board area for two-space cards):
+Targets are chosen **one step at a time**, not built by the caller. Dispatching
+a targeted play without `targets` opens a `cardTargeting` decision; the engine
+then offers the legal options for the current step only:
 
 ```ts
-getLegalActionIntents(state[, player]) → Action[]     // card plays WITHOUT targets
-getTargetOptions(state, intent)        → CardTargets[] // every valid payload for one intent
+getPendingDecisionOptions(state) → CardTarget[]   // options for the CURRENT step
+applyAction(state, { type: 'selectTarget', player, target })   // pick one
+applyAction(state, { type: 'cancelTargeting', player })        // back out
 ```
 
-`getLegalActions` is exactly the composition of the two. Use the pair when
-building an incremental target picker (filter the payload list by the picks so
-far — this is what `GameScreen` does) or when planning moves without paying for
-the expansion (this is what the AI does). Enumeration is generic: candidate
-values come from the card's `targetSpec` slot kinds and the card's own
-`validate` is the only judge, so adding a card requires no enumerator change.
+Each step's options are recomputed from live state (never stored on the
+decision, so they can't go stale across a save/load), and later steps are
+narrowed by earlier picks: after choosing Plot Twist's first space, the second
+step offers only that space's orthogonal neighbours (≤4), not every board-wide
+pairing. On the last step the card's own `validate` re-runs on the complete
+payload before the card is committed. So the cost of listing options is
+proportional to the current decision step, not the product of every slot.
 
-A `targetSpec` slot may set `ordered: true` when the order of the picks is
-meaningful (Instigation: the first gnome is the attacker), in which case both
-orders are enumerated; otherwise one canonical order is emitted per
-combination.
+A play that already carries a full `targets` payload is committed in one shot
+(re-validated, then played) — this is the path the AI and direct callers use,
+so supplying targets up front still works exactly as before.
 
-Enumeration work per card is bounded by `MAX_TARGET_COMBINATIONS` (20,000
-candidate payloads examined). Exceeding it **throws** `EngineError('INTERNAL')`
-rather than truncating — a truncated list would silently drop legal plays, and
-since the budget counts candidates *examined*, the drops would not even be
-proportional to a card's own breadth. The widest shipped card is a two-space
-card at C(n², 2): 1,176 on the default 7×7, 7,260 on 11×11, 14,196 on 13×13.
-The limit is first reached at 15×15, which no game configuration produces (the
-setup UI does not expose board size; the custom-preset editor is fixed at 7×7),
-so it is reachable only by calling `createGame` directly with `boardSize >= 15`.
-Tests assert complete enumeration at 7/9/11/13 and the throw at 15.
+**Analysis helper — `getLegalActions` / `enumerateCompleteCardActions`.** The
+same actions but with every targeted card expanded into complete, immediately
+executable actions (one per valid `CardTargets` payload). This is the
+**expensive** path — it walks each card's whole targeting flow — and is used
+only by tests and offline analysis, never by the UI or the normal AI loop.
+Because expansion is phased (each step yields only its own legal options,
+narrowed by earlier picks), it is proportional to a card's real branching
+(Plot Twist: 2·n·(n-1) adjacent pairs) rather than C(n², k), so there is **no
+global combination ceiling** — the old `MAX_TARGET_COMBINATIONS` is gone.
+
+Targeting is card-agnostic in the engine and UI: candidates come from each
+card's `targetFlow` steps (see below), and adding a card needs no change to the
+enumerator, the action router, or the targeting UI. A step may set
+`ordered: true` when pick order is meaningful (Instigation: the first gnome is
+the attacker) so the analysis helper emits both orders; otherwise it emits one
+canonical order per unordered combination (no reversed duplicates).
+
+**Transaction model.** Playing a card is free, and the card is **not removed
+from hand until targeting completes successfully** — so cancelling, or a target
+becoming invalid mid-flow, leaves the game exactly as it was (no duplication,
+no loss, no double-charge). While a `cardTargeting` decision is open, normal
+turn actions and starting another card are blocked, like any other pending
+decision. Cancellation is always available and restores whatever preceded the
+play (a response window, or the idle Action Phase).
 
 ## Cards
 
 Data-driven in `cards.ts`: 23 Whimsy cards × 2 copies + 5 Curses (one joins the
-deck per reshuffle, revealed face-up on draw, permanently active). Playing a
-card moves it hand → discard immediately and pushes a stack entry; every other
-`playing` player gets a response window (auto-passed with nothing playable);
-the stack resolves LIFO; targets are validated at play time (throw) and again
-at resolution (fizzle: logged, no effect).
+deck per reshuffle, revealed face-up on draw, permanently active). A targeted
+card declares a `targetFlow(state, player) → TargetStep[]` — the ordered steps
+the engine walks during phased targeting (each step's `getOptions` computes its
+legal options from the state and the earlier picks). Once targeting completes
+(or a full payload is supplied up front), playing the card moves it hand →
+discard and pushes a stack entry; every other `playing` player gets a response
+window (auto-passed with nothing playable); the stack resolves LIFO; targets
+are validated at completion (throw) and again at resolution (fizzle: logged, no
+effect).
 
 Timing: **Sudden** — any time no decision is pending, plus inside Respond
 windows; **Ritual** — only the owner's Action Phase. A card flagged
