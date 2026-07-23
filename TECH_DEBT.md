@@ -95,6 +95,18 @@ blocks · **P3** opportunistic.
   fight), but the BFS distance field marks the shared square unreachable, so
   any move off it scores ≈+200. Only bites hand-crafted test states; noted so
   future AI tests avoid placing a friendly gnome onto an enemy without a fight.
+- **Proactive Hard pincer / 4p spread — tried and removed 2026-07-23.** A
+  Hard-only bias assigning each attacker a different face of the target home
+  (and, in 4p, a different enemy home) was implemented, then dropped after
+  measurement: on an open board the shortest face is identical for every
+  attacker, so a bias weak enough not to hurt was inert (`distinctFacesEver=1`
+  across full games) and one strong enough to fire only forces tempo-losing
+  detours against an undefended home (the gambler's-ruin fight math is
+  face-independent). The behaviour the rule wanted — a push one wall can't stop
+  — already emerges: `distanceField` treats a walled/occupied face as
+  impassable and re-routes the force around it, and anti-balling keeps them off
+  one square. If revisited, make the split *reactive* to an actual blocker, not
+  proactive, and prove it moves the win rate before re-adding branching.
 
 - **Board size > 7 UI.** Tokens/emoji now scale via container-query units ×
   `--n` (2026-07-16), so 9×9+ renders proportionally — but it has only been

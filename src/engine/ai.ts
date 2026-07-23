@@ -15,7 +15,9 @@
  *  - Slides / tunnels / Snailmaggedon moves: score destinations (advance
  *    toward the nearest enemy home / center, avoid active flytraps, only
  *    attack favorably); entry effects are declined unless a destination
- *    scores positive.
+ *    scores positive. Piling friendly gnomes onto one square is penalized
+ *    (spread out: ~1–2 per space, a 3rd only when it buys a fight), so the
+ *    force fans out toward a target instead of marching as a single ball.
  *  - Respond windows:
  *      · fight — shield a gnome with Gnomebody Dies in a flytrap fight (only
  *        our own gnome can die there); in a home-stakes / late-game fight,
@@ -23,11 +25,15 @@
  *      · card — Nope-Gnome a card that would kill one of our gnomes
  *        (Rocket Propelled Gnome / Mushroom Cloud on our stack); failing a
  *        Nope, raise a Gnomebody Dies shield instead. Otherwise pass.
- *  - Action phase: plant economy gardens early (mushroom with deep reserves,
- *    dandelion otherwise), a maize or flytrap near home to guard the approach,
- *    and a tunnel once one already exists elsewhere on the board (a lone
- *    tunnel has nowhere to link to); march gnomes toward the nearest enemy
- *    home / the Center Star; attack when favorable; play Whimsy
+ *  - Action phase: build economy gardens as ONE defended cluster near home
+ *    (mushroom with deep reserves, dandelion otherwise), capped by how many
+ *    already sit near home — never dropped mid-march, which used to trail a
+ *    line of abandoned gardens the AI never came back to hold. Plant a maize
+ *    or flytrap near home to guard the approach, and a tunnel once one already
+ *    exists elsewhere on the board (a lone tunnel has nowhere to link to);
+ *    march gnomes toward the nearest enemy home / the Center Star while
+ *    settling some onto the economy cluster to harvest it and digging in to
+ *    defend it when an enemy closes in; attack when favorable; play Whimsy
  *    cards through `planCardPlay` (economy, removal, reinforcement and
  *    finisher moves — each with a deterministic target picker validated
  *    against the card's own `validate`); draw when wish-rich with hand room;
@@ -46,7 +52,21 @@
  *    bad fights along the way. A deliberately weaker, exploitable opponent.
  *  - 'normal' — the heuristics described above; this is today's opponent.
  *  - 'hard'   — normal's heuristics, sharpened (see scoreDestination and
- *    planCardPlay for the hard-only branches).
+ *    planCardPlay for the hard-only branches). Positional rules of thumb Hard
+ *    adds on top:
+ *      · Don't wall yourself in: rather than planting maize/flytrap by its own
+ *        home (which only limits its own movement), Hard drops them on an
+ *        enemy's expected attack lane — a porch square facing us — as a Wish-tax
+ *        (maize) or forced-detour wall (flytrap). Opportunistic: only when a
+ *        forward gnome already stands there and isn't better off storming. See
+ *        scoreForwardDeterrent.
+ *      · Attack on multiple lanes without abandoning the start: this falls out
+ *        of existing machinery rather than a Hard-only branch — the pathfinder
+ *        routes the force AROUND a walled/occupied face (an automatic pincer
+ *        exactly when one helps) and anti-balling keeps gnomes off a single
+ *        square, while the standing home-garrison penalty and the economy-hold
+ *        keep a defender back at the base. (A proactive pincer/spread bias was
+ *        tried and removed as inert / tempo-negative — see primaryTarget.)
  */
 
 import type { Action, CardId, CardTargets, GameState, PendingDecision, PlantableGardenType, PlayerId, Pos, Unit } from './types';
@@ -215,7 +235,16 @@ function chooseAiActionInner(state: GameState): Action {
 // Scoring
 // ---------------------------------------------------------------------------
 
-/** Nearest enemy home garden still standing, else the center. */
+/**
+ * Nearest enemy home garden still standing, else the center.
+ *
+ * (History: a Hard-only proactive "pincer / spread across homes" bias once lived
+ * here. It was removed after measurement — on an open board the shortest face is
+ * the same for every attacker and a bias strong enough to force side-face
+ * detours only wastes tempo against an undefended home, while the pathfinder
+ * ALREADY re-routes the force around a face the enemy actually walls, i.e. it
+ * pincers exactly when a pincer helps. See TECH_DEBT.md.)
+ */
 function primaryTarget(state: GameState, player: PlayerId, from: Pos): Pos {
   let best: Pos | null = null;
   let bestDist = Infinity;
@@ -280,6 +309,18 @@ function scoreDestination(state: GameState, player: PlayerId, from: Pos, to: Pos
   if (isDangerousFlytrap(state, to)) score -= 40;
 
   const enemies = enemyUnitsAt(state, to, player);
+  if (enemies.length === 0 && !samePos(to, from)) {
+    // Anti-balling: keep ~1–2 friendly gnomes per square. `friendlies` excludes
+    // the mover (still at `from`), so it is the stack height this move would
+    // land onto; the resulting stack is one higher. A 3rd gnome onto a square is
+    // discouraged and a 4th strongly so — but only on an empty (non-fight)
+    // destination, since piling in for an actual fight is governed by the
+    // win-probability branch below, not by spreading.
+    const friendlies = playerUnitsAt(state, to, player).filter((u) => u.kind === 'gnome').length;
+    if (friendlies >= 3) score -= 24;
+    else if (friendlies === 2) score -= 8;
+    else if (friendlies === 1) score -= 1;
+  }
   if (enemies.length > 0) {
     const destGarden = gardenAt(state, to);
     const attackingHome =
@@ -334,31 +375,67 @@ function scoreActionPhase(state: GameState, player: PlayerId, action: Action): n
         if (defenders <= 1 && gnomesOnBoard(state, player) >= 2) score -= 12;
         else if (defenders <= 1 && enemyNear(state, player, unit.pos, 3)) score -= 6;
       }
+      // Work the economy cluster. Landing a gnome on one of our own, currently
+      // unheld economy gardens is worth a little (it will harvest there next
+      // turn), which draws passing gnomes onto the cluster instead of past it.
+      const dest = gardenAt(state, action.to);
+      if (
+        (dest?.type === 'dandelion' || dest?.type === 'mushroom') &&
+        playerUnitsAt(state, action.to, player).every((u) => u.kind !== 'gnome')
+      ) {
+        score += 2;
+      }
+      // Hold the cluster: don't pull the sole gnome off one of our economy
+      // gardens. The base pull erodes with the same late-game desperation ramp
+      // used elsewhere (so a turtled game still breaks open and terminates),
+      // with an extra bump to dig in while an enemy is closing on the garden.
+      if (g?.type === 'dandelion' || g?.type === 'mushroom') {
+        const holders = playerUnitsAt(state, unit.pos, player).filter((u) => u.kind === 'gnome').length;
+        if (holders <= 1) {
+          const desperation = Math.min(6, (state.turn?.number ?? 0) / 25);
+          let hold = Math.max(0, 3 - desperation);
+          if (enemyNear(state, player, unit.pos, 3)) hold += 4;
+          score -= hold;
+        }
+      }
       return score;
     }
     case 'plant': {
       if (p.wishes < 2) return -Infinity; // keep a wish buffer
-      const own = ownedEconomyGardens(state, player);
       const home = p.homePos;
-      if (action.gardenType === 'mushroom' && own < 2 && reserveGnomes(state, player) >= 6) return 9;
-      if (action.gardenType === 'dandelion' && own < 3) return 8;
-      if (
-        action.gardenType === 'maize' &&
-        manhattan(action.pos, home) <= 2 &&
-        !samePos(action.pos, home) &&
-        !hasOwnGardenTypeNearHome(state, player, 'maize')
-      ) {
-        // Taxes any unit exiting it, guard is symmetric — but placed near our
-        // own home it slows an enemy assault more than it slows our defense.
-        return 7;
+      if (action.gardenType === 'mushroom' || action.gardenType === 'dandelion') {
+        // Economy gardens are built as ONE defended cluster near home, capped by
+        // how many already sit near home — counted whether or not a gnome is
+        // currently standing on them. This stops the old behaviour where the AI
+        // planted a fresh garden every time a holder wandered off (occupancy
+        // counting made the near-home total look empty again), trailing a line
+        // of abandoned Mushroom Gardens across the board, and keeps the economy
+        // somewhere the AI's gnomes can actually hold and defend it.
+        if (manhattan(action.pos, home) > ECONOMY_CLUSTER_RADIUS) return -1;
+        const cluster = economyGardensNearHome(state, player, ECONOMY_CLUSTER_RADIUS);
+        if (action.gardenType === 'mushroom') {
+          return cluster < 2 && reserveGnomes(state, player) >= 6 ? 9 : -1;
+        }
+        return cluster < 3 ? 8 : -1; // dandelion
       }
-      if (
-        action.gardenType === 'flytrap' &&
-        manhattan(action.pos, home) <= 2 &&
-        !samePos(action.pos, home) &&
-        !hasOwnGardenTypeNearHome(state, player, 'flytrap')
-      ) {
-        return 6;
+      if (action.gardenType === 'maize' || action.gardenType === 'flytrap') {
+        if (isHard(state, player)) {
+          // Hard doesn't wall in its own base (that only limits its own
+          // flexibility). It drops these on an ENEMY's expected attack lane
+          // instead — opportunistically, since we plant where we already stand.
+          return scoreForwardDeterrent(state, player, action.pos, action.gardenType);
+        }
+        // Normal / Easy: guard our own approach near home. Maize taxes any unit
+        // exiting it and the flytrap bites arrivals; both symmetric, but placed
+        // by our home they slow an enemy assault more than they slow our defense.
+        if (
+          manhattan(action.pos, home) <= 2 &&
+          !samePos(action.pos, home) &&
+          !hasOwnGardenTypeNearHome(state, player, action.gardenType)
+        ) {
+          return action.gardenType === 'maize' ? 7 : 6;
+        }
+        return -1;
       }
       if (action.gardenType === 'tunnel' && anyTunnelOnBoard(state) && !hasOwnGardenTypeNearHome(state, player, 'tunnel')) {
         // A lone tunnel has nothing to link to; only worth planting once the
@@ -404,6 +481,31 @@ function ownedEconomyGardens(state: GameState, player: PlayerId): number {
   return count;
 }
 
+/**
+ * Manhattan radius of the AI's economy "home cluster": how far from home an
+ * economy garden still counts as part of the defended cluster, both for the
+ * plant-placement guard and the count that caps further planting.
+ */
+const ECONOMY_CLUSTER_RADIUS = 3;
+
+/**
+ * Count economy gardens (Dandelion / Mushroom) within `radius` of `player`'s
+ * home, occupied or not. Unlike `ownedEconomyGardens` this does NOT depend on a
+ * gnome currently standing on the garden, so the AI's plant cap stops it from
+ * replanting the moment a holder wanders off (the cause of the abandoned-garden
+ * trail).
+ */
+function economyGardensNearHome(state: GameState, player: PlayerId, radius: number): number {
+  const home = state.players[player].homePos;
+  let count = 0;
+  for (const [key, g] of Object.entries(state.gardens)) {
+    if (g.type !== 'dandelion' && g.type !== 'mushroom') continue;
+    const [x, y] = key.split(',').map(Number);
+    if (manhattan({ x, y }, home) <= radius) count += 1;
+  }
+  return count;
+}
+
 function hasOwnGardenTypeNearHome(state: GameState, player: PlayerId, gardenType: PlantableGardenType): boolean {
   const home = state.players[player].homePos;
   for (const [key, g] of Object.entries(state.gardens)) {
@@ -416,6 +518,58 @@ function hasOwnGardenTypeNearHome(state: GameState, player: PlayerId, gardenType
 
 function anyTunnelOnBoard(state: GameState): boolean {
   return Object.values(state.gardens).some((g) => g.type === 'tunnel');
+}
+
+/** Is there already a garden of `gardenType` within `radius` of `pos`? */
+function gardenTypeNear(state: GameState, gardenType: PlantableGardenType, pos: Pos, radius: number): boolean {
+  for (const [key, g] of Object.entries(state.gardens)) {
+    if (g.type !== gardenType) continue;
+    const [x, y] = key.split(',').map(Number);
+    if (manhattan({ x, y }, pos) <= radius) return true;
+  }
+  return false;
+}
+
+/**
+ * Hard-only: score dropping a maize / flytrap on an enemy's expected attack lane
+ * — a square on an enemy's porch (within 2, not the home itself) and on the side
+ * facing OUR home, i.e. the step they push off to march at us. Keeping these off
+ * our own base preserves our own flexibility ("don't wall yourself in"). It is
+ * opportunistic: we plant where we already stand, so this only pays out when a
+ * forward gnome is already sitting on such a square and isn't better off storming
+ * the home outright (a favorable storm scores higher and wins the comparison).
+ *
+ * Maize is safe to stand on (it only taxes the Wish of whoever LEAVES), so we
+ * happily plant it under ourselves. A flytrap is neutral and bites its occupant
+ * at the next harvest, so we only drop one when the planting gnome still has its
+ * move this turn and can vacate — the +10 "flee a flytrap" bonus in the move case
+ * then walks it off the same turn, leaving an active wall on the enemy's doorstep.
+ */
+function scoreForwardDeterrent(
+  state: GameState,
+  player: PlayerId,
+  pos: Pos,
+  gardenType: 'maize' | 'flytrap',
+): number {
+  const ourHome = state.players[player].homePos;
+  for (const p of state.players) {
+    if (p.id === player || p.status !== 'playing') continue;
+    const g = gardenAt(state, p.homePos);
+    if (!g || g.type !== 'home' || g.owner !== p.id) continue;
+    const dEnemy = manhattan(pos, p.homePos);
+    if (dEnemy === 0 || dEnemy > 2) continue; // on their porch, not their home, not too far
+    if (manhattan(pos, ourHome) >= manhattan(p.homePos, ourHome)) continue; // on the side facing us
+    if (gardenTypeNear(state, gardenType, pos, 2)) continue; // one deterrent per lane is enough
+    if (gardenType === 'flytrap') {
+      const canVacate = playerUnitsAt(state, pos, player).some(
+        (u) => u.kind === 'gnome' && u.movedOnTurn !== (state.turn?.number ?? -1),
+      );
+      if (!canVacate) continue; // would activate under our own planter next harvest
+      return 6;
+    }
+    return 7; // maize
+  }
+  return -1;
 }
 
 // ---------------------------------------------------------------------------

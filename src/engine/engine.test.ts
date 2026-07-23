@@ -512,6 +512,138 @@ describe('AI policies', () => {
     });
     expect(chooseAiAction(s)).toEqual({ type: 'plant', player: me, pos, gardenType: 'tunnel' });
   });
+
+  it('spreads out instead of balling a gnome onto an already-stacked square', () => {
+    // The only square that advances toward the foe home is deliberately stacked
+    // with three friendly gnomes. A 4th onto it is penalized below even ending
+    // the turn, so the AI declines to pile on (before anti-balling it advanced
+    // there every time — the "move them all together" behaviour).
+    let s = toActionPhase(3);
+    const me = activePlayer(s);
+    const foe = (me + 1) % 2;
+    const foeHome = s.players[foe].homePos;
+    const myHome = s.players[me].homePos;
+    const dir = Math.sign(foeHome.x - myHome.x) || 1; // homes sit on the same row
+    const mover = { x: foeHome.x - 3 * dir, y: foeHome.y };
+    const stacked = { x: foeHome.x - 2 * dir, y: foeHome.y }; // the one advancing step
+    // Rebuild the actor's force: one fresh mover + three spent gnomes stacked
+    // on the single advancing square. Clear gardens around so nothing else skews
+    // the move scores.
+    s = mutate(s, (d) => {
+      for (const id of Object.keys(d.units)) if (d.units[id].owner === me) delete d.units[id];
+      for (const key of Object.keys(d.gardens)) {
+        const [x, y] = key.split(',').map(Number);
+        if (d.gardens[key].type !== 'home' && Math.abs(x - mover.x) + Math.abs(y - mover.y) <= 2) {
+          delete d.gardens[key];
+        }
+      }
+      d.players[me].wishes = 1; // < 2 disables planting, < 4 disables drawing
+      d.players[me].hand = [];
+    });
+    const m = withGnome(s, me, mover);
+    const g1 = withGnome(m.state, me, stacked);
+    const g2 = withGnome(g1.state, me, stacked);
+    const g3 = withGnome(g2.state, me, stacked);
+    s = mutate(g3.state, (d) => {
+      const t = d.turn!.number;
+      for (const id of [g1.unitId, g2.unitId, g3.unitId]) d.units[id].movedOnTurn = t; // spent
+      d.units[m.unitId].movedOnTurn = null; // fresh mover
+    });
+    expect(chooseAiAction(s)).toEqual({ type: 'endTurn', player: me });
+  });
+
+  it('does not plant an economy garden far from home (no abandoned-garden trail)', () => {
+    let s = toActionPhase(3);
+    const me = activePlayer(s);
+    const home = s.players[me].homePos;
+    const far = { x: home.x === 0 ? 4 : home.x - 4 < 0 ? home.x + 4 : home.x - 4, y: home.y === 3 ? 6 : 3 };
+    s = mutate(s, (d) => {
+      for (const id of Object.keys(d.units)) if (d.units[id].owner === me) delete d.units[id];
+      delete d.gardens[`${far.x},${far.y}`];
+      d.players[me].wishes = 5; // plenty to plant with
+      d.players[me].hand = [];
+    });
+    const g = withGnome(s, me, far);
+    s = g.state;
+    // manhattan(far, home) must exceed the cluster radius for this to be meaningful.
+    expect(Math.abs(far.x - home.x) + Math.abs(far.y - home.y)).toBeGreaterThan(3);
+    expect(chooseAiAction(s).type).not.toBe('plant');
+  });
+
+  it('plants an economy garden near home to seed the cluster', () => {
+    let s = toActionPhase(3);
+    const me = activePlayer(s);
+    const home = s.players[me].homePos;
+    const pos = { x: home.x, y: home.y === 0 ? 1 : home.y - 1 < 0 ? home.y + 1 : home.y - 1 };
+    const g = withGnome(s, me, pos);
+    s = mutate(g.state, (d) => {
+      // Clear any preset economy gardens near home so the cluster starts empty.
+      for (const key of Object.keys(d.gardens)) {
+        const gd = d.gardens[key];
+        if (gd.type !== 'dandelion' && gd.type !== 'mushroom') continue;
+        const [x, y] = key.split(',').map(Number);
+        if (Math.abs(x - home.x) + Math.abs(y - home.y) <= 3) delete d.gardens[key];
+      }
+      delete d.gardens[`${pos.x},${pos.y}`];
+      d.supply.mushroom = 0; // force the dandelion branch for a stable assertion
+      d.players[me].wishes = 5;
+      d.players[me].hand = [];
+      d.units[g.unitId].movedOnTurn = d.turn!.number; // no move competes with the plant
+    });
+    expect(chooseAiAction(s)).toEqual({ type: 'plant', player: me, pos, gardenType: 'dandelion' });
+  });
+
+  it('Hard: plants a Maize deterrent on the enemy attack lane, not near its own home', () => {
+    let s = toActionPhase(3);
+    const me = activePlayer(s);
+    const foe = (me + 1) % 2;
+    const foeHome = s.players[foe].homePos;
+    const myHome = s.players[me].homePos;
+    const dir = Math.sign(foeHome.x - myHome.x) || 1;
+    const porch = { x: foeHome.x - dir, y: foeHome.y }; // on the foe's porch, facing us
+    s = mutate(s, (d) => {
+      for (const id of Object.keys(d.units)) if (d.units[id].owner === me) delete d.units[id];
+      delete d.gardens[`${porch.x},${porch.y}`];
+      d.players[me].difficulty = 'hard';
+      d.players[me].wishes = 5;
+      d.players[me].hand = [];
+    });
+    const g = withGnome(s, me, porch);
+    s = mutate(g.state, (d) => {
+      d.units[g.unitId].movedOnTurn = d.turn!.number; // already moved: only the plant competes
+    });
+    expect(chooseAiAction(s)).toEqual({ type: 'plant', player: me, pos: porch, gardenType: 'maize' });
+  });
+
+  it('Hard refuses to wall its own base where Normal would plant a maize guard', () => {
+    let s = toActionPhase(3);
+    const me = activePlayer(s);
+    const home = s.players[me].homePos;
+    const pos = { x: home.x, y: home.y === 0 ? 1 : home.y - 1 < 0 ? home.y + 1 : home.y - 1 }; // adjacent to home
+    s = mutate(s, (d) => {
+      for (const id of Object.keys(d.units)) if (d.units[id].owner === me) delete d.units[id];
+      delete d.gardens[`${pos.x},${pos.y}`];
+      d.supply.dandelion = 0; // take the economy plant off the table
+      d.supply.mushroom = 0;
+      d.supply.tunnel = 0;
+      d.players[me].wishes = 3; // enough to plant, too few to make drawing worthwhile
+      d.players[me].hand = [];
+    });
+    const g = withGnome(s, me, pos);
+    s = mutate(g.state, (d) => {
+      d.units[g.unitId].movedOnTurn = d.turn!.number;
+    });
+    // Normal plants the near-home maize guard...
+    const normal = mutate(s, (d) => {
+      d.players[me].difficulty = 'normal';
+    });
+    expect(chooseAiAction(normal)).toEqual({ type: 'plant', player: me, pos, gardenType: 'maize' });
+    // ...but Hard won't hem itself in there (no enemy lane nearby), so it passes.
+    const hard = mutate(s, (d) => {
+      d.players[me].difficulty = 'hard';
+    });
+    expect(chooseAiAction(hard)).toEqual({ type: 'endTurn', player: me });
+  });
 });
 
 // ---------------------------------------------------------------------------
