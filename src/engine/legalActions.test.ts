@@ -1,23 +1,26 @@
 /**
- * The legal-action contract:
- *   everything getLegalActions returns must be directly executable by
- *   applyAction, targets included.
+ * The legal-action contract, phased-targeting edition:
  *
- * These tests are the guard rail for that promise — the previous API handed
- * back `playCard` / `respondPlayCard` actions with no target payload, which a
- * caller could not dispatch without card-specific knowledge.
+ *  - `getLegalActionIntents` is the cheap PRIMARY API: one entry per playable
+ *    card, no target payloads.
+ *  - `getLegalActions` / `enumerateCompleteCardActions` is the expensive
+ *    ANALYSIS helper: every targeted card expanded into complete, immediately
+ *    executable actions — one per valid `CardTargets` payload — so a fuzzer or
+ *    test can dispatch anything it returns without card-specific knowledge.
+ *
+ * Phased selection itself (one target step at a time) is covered in
+ * `targeting.test.ts`; here we pin the enumeration/expansion contract.
  */
 
 import { describe, expect, it } from 'vitest';
 import type { Action, GameState } from './index';
 import {
-  MAX_TARGET_COMBINATIONS,
   applyAction,
   chooseAiAction,
   createGame,
+  enumerateCompleteCardActions,
   getLegalActionIntents,
   getLegalActions,
-  getTargetOptions,
   isGameOver,
 } from './index';
 import { CARD_DEFINITIONS, getCardDef } from './cards';
@@ -28,6 +31,13 @@ const TARGETED = CARD_DEFINITIONS.filter((c) => c.needsTargets).map((c) => c.id)
 
 function activeSeat(s: GameState): number {
   return s.turn!.activePlayer;
+}
+
+/** Complete targeted plays for one card id (payloads only). */
+function payloadsFor(s: GameState, me: number, cardId: string): Array<Action & { type: 'playCard' }> {
+  return getLegalActions(s, me).filter(
+    (a): a is Action & { type: 'playCard' } => a.type === 'playCard' && a.cardId === cardId,
+  );
 }
 
 describe('getLegalActions returns executable actions', () => {
@@ -62,7 +72,6 @@ describe('getLegalActions returns executable actions', () => {
   }, 120_000);
 
   it('targeted cards are enumerated WITH targets, and each one is executable', () => {
-    // A hand of every targeted card at once: each play must arrive complete.
     let s = toActionPhase(7);
     const me = activeSeat(s);
     s = withGnome(s, me, { x: 2, y: 3 }).state;
@@ -82,7 +91,6 @@ describe('getLegalActions returns executable actions', () => {
       }
       expect(() => applyAction(s, a), `${a.cardId} ${JSON.stringify(a.targets)}`).not.toThrow();
     }
-    // At least one genuinely targeted card made it into the enumeration.
     expect(plays.some((a) => a.type === 'playCard' && a.targets !== undefined)).toBe(true);
   });
 
@@ -117,35 +125,16 @@ describe('getLegalActions returns executable actions', () => {
     s = withGnome(s, me, { x: 2, y: 3 }).state;
     s = withHand(s, me, 'instigation');
 
-    expect(getTargetOptions(s, { type: 'playCard', player: me, cardId: 'instigation' })).toHaveLength(0);
+    expect(payloadsFor(s, me, 'instigation')).toHaveLength(0);
+    // The untargeted intent still surfaces (the cheap check passes) — dispatching
+    // it would open a targeting decision that reports "no legal targets"; it is
+    // the COMPLETE expansion that must not offer an unplayable action.
     expect(getLegalActions(s, me).some((a) => a.type === 'playCard' && a.cardId === 'instigation')).toBe(false);
   });
 });
 
-describe('getLegalActions / getLegalActionIntents / getTargetOptions', () => {
-  it('getLegalActions is exactly the intents expanded by their target options', () => {
-    let s = toActionPhase(31);
-    const me = activeSeat(s);
-    s = withGnome(s, me, { x: 2, y: 3 }).state;
-    s = withHand(s, me, 'rocket-propelled-gnome', 'wild-growth', 'four-leaf-clover');
-
-    const expanded: Action[] = [];
-    for (const intent of getLegalActionIntents(s, me)) {
-      if (intent.type !== 'playCard' && intent.type !== 'respondPlayCard') {
-        expanded.push(intent);
-        continue;
-      }
-      const opts = getTargetOptions(s, intent);
-      if (opts.length === 0) {
-        if (!getCardDef(intent.cardId)?.needsTargets) expanded.push(intent);
-        continue;
-      }
-      for (const targets of opts) expanded.push({ ...intent, targets });
-    }
-    expect(getLegalActions(s, me)).toEqual(expanded);
-  });
-
-  it('intents stay cheap: one entry per playable card, no target payloads', () => {
+describe('getLegalActionIntents (primary, cheap)', () => {
+  it('leaves card plays untargeted: one entry per playable card', () => {
     let s = toActionPhase(31);
     const me = activeSeat(s);
     s = withGnome(s, me, { x: 2, y: 3 }).state;
@@ -158,10 +147,26 @@ describe('getLegalActions / getLegalActionIntents / getTargetOptions', () => {
     expect(intents[0]).toEqual({ type: 'playCard', player: me, cardId: 'rocket-propelled-gnome' });
   });
 
-  it('returns no target options for untargeted cards', () => {
-    const s = toActionPhase(5);
+  it('does not expand a targeted card into multiple actions', () => {
+    let s = toActionPhase(31);
     const me = activeSeat(s);
-    expect(getTargetOptions(s, { type: 'playCard', player: me, cardId: 'four-leaf-clover' })).toEqual([]);
+    s = withGnome(s, me, { x: 2, y: 3 }).state;
+    s = withHand(s, me, 'plot-twist');
+    const plotIntents = getLegalActionIntents(s, me).filter(
+      (a) => a.type === 'playCard' && a.cardId === 'plot-twist',
+    );
+    expect(plotIntents).toHaveLength(1);
+    expect((plotIntents[0] as { targets?: unknown }).targets).toBeUndefined();
+  });
+});
+
+describe('complete enumeration (analysis helper)', () => {
+  it('getLegalActions and enumerateCompleteCardActions agree', () => {
+    let s = toActionPhase(31);
+    const me = activeSeat(s);
+    s = withGnome(s, me, { x: 2, y: 3 }).state;
+    s = withHand(s, me, 'rocket-propelled-gnome', 'wild-growth', 'four-leaf-clover', 'plot-twist');
+    expect(getLegalActions(s, me)).toEqual(enumerateCompleteCardActions(s, me));
   });
 
   it('enumerates both orders for an ordered slot and one for an unordered slot', () => {
@@ -176,9 +181,9 @@ describe('getLegalActions / getLegalActionIntents / getTargetOptions', () => {
     s = withHand(b.state, me, 'instigation', 'gnomio-and-juliet');
 
     // Instigation's first target is the attacker ⇒ both orders are real plays.
-    const inst = getTargetOptions(s, { type: 'playCard', player: me, cardId: 'instigation' });
+    const inst = payloadsFor(s, me, 'instigation').map((p) => p.targets!.units);
     expect(inst).toHaveLength(2);
-    expect(inst.map((t) => t.units)).toEqual(
+    expect(inst).toEqual(
       expect.arrayContaining([
         [a.unitId, b.unitId],
         [b.unitId, a.unitId],
@@ -186,43 +191,20 @@ describe('getLegalActions / getLegalActionIntents / getTargetOptions', () => {
     );
 
     // Marriage is symmetric ⇒ one canonical order only.
-    const wed = getTargetOptions(s, { type: 'playCard', player: me, cardId: 'gnomio-and-juliet' });
-    expect(wed).toHaveLength(1);
+    expect(payloadsFor(s, me, 'gnomio-and-juliet')).toHaveLength(1);
   });
 
-  it.each([7, 9, 11, 13])('enumerates completely on a %i×%i board', (boardSize) => {
+  it.each([7, 9, 11, 13, 15])('expands Plot Twist to exactly its adjacent pairs on a %i×%i board', (boardSize) => {
     let s = toActionPhase(3, { boardSize });
     const me = activeSeat(s);
     s = withGnome(s, me, { x: 2, y: 2 }).state;
-    s = withHand(s, me, ...TARGETED);
-    s = mutate(s, (d) => d.discard.push('four-leaf-clover'));
+    s = withHand(s, me, 'plot-twist');
 
-    for (const cardId of TARGETED) {
-      expect(() =>
-        getTargetOptions(s, { type: 'playCard', player: me, cardId }),
-        `${cardId} should enumerate completely on ${boardSize}×${boardSize}`).not.toThrow();
-    }
-
-    // Plot Twist is the sharpest completeness check: it accepts exactly the
-    // orthogonally adjacent unordered pairs, 2·n·(n-1) of them, so any
-    // silent truncation shows up immediately as a short count.
-    const twists = getTargetOptions(s, { type: 'playCard', player: me, cardId: 'plot-twist' });
-    expect(twists).toHaveLength(2 * boardSize * (boardSize - 1));
-  });
-
-  it('throws instead of silently truncating when the work budget is exhausted', () => {
-    // 15×15 costs C(225,2) = 25,200 candidate pairs for a two-space card,
-    // past MAX_TARGET_COMBINATIONS. No game configuration produces a board
-    // this large (see the constant's doc comment), but if one ever did, an
-    // incomplete enumeration must not pass silently as a complete one.
-    let s = toActionPhase(3, { boardSize: 15 });
-    const me = activeSeat(s);
-    s = withHand(s, me, 'pocket-shovel');
-
-    expect(() => getTargetOptions(s, { type: 'playCard', player: me, cardId: 'pocket-shovel' })).toThrow(
-      new RegExp(`MAX_TARGET_COMBINATIONS \\(${MAX_TARGET_COMBINATIONS}\\)`),
-    );
-    expect(() => getLegalActions(s, me)).toThrow(/incomplete/);
+    // Phased narrowing means the complete expansion of Plot Twist is exactly
+    // the orthogonally adjacent UNORDERED pairs, 2·n·(n-1) of them — NOT the
+    // C(n², 2) the old cartesian enumerator walked (which threw at 15×15). So
+    // even the expensive analysis helper stays proportional to the real answer.
+    expect(payloadsFor(s, me, 'plot-twist')).toHaveLength(2 * boardSize * (boardSize - 1));
   });
 });
 
@@ -235,7 +217,6 @@ describe('enumeration is pure and deterministic', () => {
     const before = JSON.stringify(s);
     getLegalActions(s, me);
     getLegalActionIntents(s, me);
-    for (const cardId of TARGETED) getTargetOptions(s, { type: 'playCard', player: me, cardId });
     expect(JSON.stringify(s)).toBe(before);
   });
 

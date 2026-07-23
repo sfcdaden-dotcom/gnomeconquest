@@ -222,3 +222,74 @@ test('plays a card and lets the opponent answer the response window', async ({ p
   expect(sawResponseWindow, 'a card response window should have opened').toBe(true);
   expect(['playing', 'finished']).toContain(await g.status());
 });
+
+// Seed 2 deals the roll-off winner a playable Plot Twist on their first turn —
+// a two-step (space, then adjacent space) targeted card, so it exercises the
+// phased narrowing end to end.
+const TWO_STEP_SEED = 2;
+
+/** Roll off, take the Home Wish, and draw until Plot Twist is playable. */
+async function reachPlayablePlotTwist(g: Game) {
+  const page = g.page;
+  await g.startTwoPlayer(TWO_STEP_SEED);
+  await g.completeRollOff();
+  await g.resolveHarvest('wish');
+  const playBtn = page.getByTestId('play-card-plot-twist');
+  for (let i = 0; i < 6; i++) {
+    if ((await playBtn.count()) > 0 && (await playBtn.isEnabled())) break;
+    const draw = page.getByTestId('draw-card');
+    await expect(draw).toBeEnabled(); // auto-waits for the action bar to paint
+    await draw.click();
+    await g.ready();
+  }
+  await expect(playBtn).toBeEnabled();
+}
+
+test('phased targeting narrows the second target after the first pick (Plot Twist)', async ({ page }) => {
+  const g = new Game(page);
+  await reachPlayablePlotTwist(g);
+  const targets = page.locator('.board button[data-highlight="target"]');
+  const banner = page.getByTestId('targeting-banner');
+
+  // Play the card: the engine opens phased targeting, step 1 of 2.
+  await page.getByTestId('play-card-plot-twist').click();
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText('1/2');
+  expect(await g.decision()).toBe('cardTargeting');
+
+  // Step 1 offers every board space; more than a single-cell neighbourhood.
+  const step1Count = await targets.count();
+  expect(step1Count).toBeGreaterThan(4);
+
+  // Pick the first target; the banner advances and the set NARROWS to the
+  // chosen cell's orthogonal neighbours (at most 4), with the pick marked.
+  await targets.first().click();
+  await expect(banner).toContainText('2/2');
+  const step2Count = await targets.count();
+  expect(step2Count).toBeLessThan(step1Count);
+  expect(step2Count).toBeLessThanOrEqual(4);
+  await expect(page.locator('.board button[data-highlight="picked"]')).toHaveCount(1);
+
+  // Pick the second target: the card resolves and targeting closes.
+  await targets.first().click();
+  await g.ready();
+  await expect(banner).toBeHidden();
+  expect(await g.decision()).not.toBe('cardTargeting');
+});
+
+test('cancelling phased targeting returns the card to the hand', async ({ page }) => {
+  const g = new Game(page);
+  await reachPlayablePlotTwist(g);
+  const banner = page.getByTestId('targeting-banner');
+
+  await page.getByTestId('play-card-plot-twist').click();
+  await expect(banner).toBeVisible();
+
+  // Back out: the banner closes, no card was played, and Plot Twist is still
+  // in hand and playable again.
+  await page.getByTestId('targeting-cancel').click();
+  await g.ready();
+  await expect(banner).toBeHidden();
+  expect(await g.decision()).not.toBe('cardTargeting');
+  await expect(page.getByTestId('play-card-plot-twist')).toBeEnabled();
+});
